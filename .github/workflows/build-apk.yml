@@ -16,10 +16,12 @@ jobs:
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: build-aar.yml
+          workflow_conclusion: success
           name: wagateway-aar
           path: app/libs
           check_artifacts: false
           if_no_artifact_found: fail
+        continue-on-error: true
 
       - name: Setup JDK
         uses: actions/setup-java@v4
