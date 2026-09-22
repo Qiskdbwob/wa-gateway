@@ -1,0 +1,507 @@
+package com.example.ui.memory
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.agent.model.AgentSession
+import com.example.ui.components.EmptyStateCard
+import com.example.ui.theme.AgentEmerald
+import com.example.wagateway.WaGatewayViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+enum class MemoryCategory(val label: String, val icon: ImageVector) {
+    SESSIONS("Sessions", Icons.Default.Chat),
+    EPISODIC("Episodic Memory", Icons.Default.History),
+    KNOWLEDGE("Knowledge", Icons.Default.Psychology),
+    SKILLS("Skills", Icons.Default.AutoAwesome),
+    LEARNING("Learning", Icons.Default.Lightbulb)
+}
+
+@Composable
+fun MemoryScreen(
+    viewModel: WaGatewayViewModel,
+    onNavigateToChatSession: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val sessions by viewModel.sessions.collectAsState()
+    val systemPrompt by viewModel.agentSystemPrompt.collectAsState()
+    val modelId by viewModel.agentModelId.collectAsState()
+    val isAutoReply by viewModel.isAgentAutoReply.collectAsState()
+    val useEchoFallback by viewModel.useEchoFallback.collectAsState()
+
+    var selectedTab by remember { mutableStateOf(MemoryCategory.SESSIONS) }
+    var sessionToDelete by remember { mutableStateOf<AgentSession?>(null) }
+    var sessionToClear by remember { mutableStateOf<AgentSession?>(null) }
+
+    val totalMessages = remember(sessions) { sessions.sumOf { it.messageCount } }
+    val timeFormat = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(top = 12.dp)
+    ) {
+        // Header
+        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            Text(
+                text = "Memory & Persistence",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Manajemen memori persisten di Room SQLite lokal",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Persistence Overview Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(AgentEmerald.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Storage,
+                            contentDescription = null,
+                            tint = AgentEmerald,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "SQLite Room Database",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Penyimpanan lokal aman tanpa cloud",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "${sessions.size} Sesi",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "$totalMessages Pesan",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Categories Scrollable Tab Row
+        ScrollableTabRow(
+            selectedTabIndex = selectedTab.ordinal,
+            edgePadding = 16.dp,
+            divider = { Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)) }
+        ) {
+            MemoryCategory.values().forEach { category ->
+                Tab(
+                    selected = selectedTab == category,
+                    onClick = { selectedTab = category },
+                    text = { Text(category.label) },
+                    icon = { Icon(category.icon, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                )
+            }
+        }
+
+        // Tab Content
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            when (selectedTab) {
+                MemoryCategory.SESSIONS -> {
+                    if (sessions.isEmpty()) {
+                        EmptyStateCard(
+                            icon = Icons.Outlined.Storage,
+                            title = "Belum ada percakapan tersimpan",
+                            subtitle = "Sesi percakapan WhatsApp dan chat langsung akan otomatis dicatat di sini."
+                        )
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(sessions, key = { it.sessionId }) { session ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("memory_session_${session.sessionId}"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surface
+                                    ),
+                                    border = CardDefaults.outlinedCardBorder().copy(
+                                        brush = androidx.compose.ui.graphics.SolidColor(
+                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                        )
+                                    )
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(8.dp)
+                                                        .clip(CircleShape)
+                                                        .background(AgentEmerald)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = session.conversationId.ifBlank { "Session ${session.sessionId.take(6)}" },
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1
+                                                )
+                                            }
+
+                                            Text(
+                                                text = "${session.messageCount} pesan",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+
+                                        Text(
+                                            text = session.lastMessagePreview?.ifBlank { "(Belum ada pesan)" } ?: "(Belum ada pesan)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2
+                                        )
+
+                                        Spacer(modifier = Modifier.height(10.dp))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "Update: ${timeFormat.format(Date(session.updatedAt))}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                            )
+
+                                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                TextButton(
+                                                    onClick = {
+                                                        viewModel.selectSession(session.sessionId)
+                                                        onNavigateToChatSession(session.sessionId)
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                                ) {
+                                                    Text("Buka Chat", style = MaterialTheme.typography.labelSmall)
+                                                }
+
+                                                IconButton(
+                                                    onClick = { sessionToClear = session },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.DeleteSweep,
+                                                        contentDescription = "Bersihkan",
+                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+
+                                                IconButton(
+                                                    onClick = { sessionToDelete = session },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.DeleteOutline,
+                                                        contentDescription = "Hapus",
+                                                        tint = Color.Red.copy(alpha = 0.8f),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MemoryCategory.EPISODIC -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Konteks Episodik Aktif",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Agent menyimpan hingga 20 riwayat pesan terakhir per percakapan untuk membentuk konteks yang relevan saat memanggil model LLM.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Batas Pruning DB:", style = MaterialTheme.typography.labelMedium)
+                                    Text("100 pesan / sesi", fontWeight = FontWeight.Bold)
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Context Window Saat Ini:", style = MaterialTheme.typography.labelMedium)
+                                    Text("20 pesan", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MemoryCategory.KNOWLEDGE -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "System Prompt & Persona",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = systemPrompt,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                MemoryCategory.SKILLS -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val skillsList = listOf(
+                            Triple("WhatsApp Gateway Integration", "whatsmeow Go bridge multi-device & event listener", true),
+                            Triple("Room SQLite Persistence", "Database lokal untuk sesi, riwayat chat, dan konfigurasi", true),
+                            Triple("OpenAI-Compatible Inference", "Konektor HTTP REST untuk OpenAI / LM Studio / Ollama", true),
+                            Triple("Echo Fallback Engine", "Mekanisme balasan cerdas offline tanpa dependensi cloud", useEchoFallback)
+                        )
+
+                        skillsList.forEach { (name, desc, active) ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = if (active) AgentEmerald else Color.Gray,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = desc,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MemoryCategory.LEARNING -> {
+                    EmptyStateCard(
+                        icon = Icons.Default.Info,
+                        title = "Modul Pembelajaran",
+                        subtitle = "Pembelajaran jangka panjang (long-term memory & adaptation) belum diaktifkan."
+                    )
+                }
+            }
+        }
+    }
+
+    // Confirmation Dialogs
+    if (sessionToDelete != null) {
+        val s = sessionToDelete!!
+        AlertDialog(
+            onDismissRequest = { sessionToDelete = null },
+            title = { Text("Hapus Sesi Percakapan?") },
+            text = { Text("Semua pesan dalam sesi \"${s.conversationId}\" akan dihapus permanen dari Room Database.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteSession(s.sessionId)
+                        sessionToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text("Hapus")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sessionToDelete = null }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+
+    if (sessionToClear != null) {
+        val s = sessionToClear!!
+        AlertDialog(
+            onDismissRequest = { sessionToClear = null },
+            title = { Text("Bersihkan Riwayat Pesan?") },
+            text = { Text("Semua pesan dalam sesi \"${s.conversationId}\" akan dikosongkan.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.clearSessionHistory(s.sessionId)
+                        sessionToClear = null
+                    }
+                ) {
+                    Text("Bersihkan")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sessionToClear = null }) {
+                    Text("Batal")
+                }
+            }
+        )
+    }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "WA Gateway",
+  "description": "Personal AI Agent dengan integrasi multi-saluran WhatsApp, Model Provider LLM, dan Room database.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
