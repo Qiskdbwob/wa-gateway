@@ -142,7 +142,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
             }
             c.sendText(target, text)
-            addLog("Message sent to $target: $text")
+            addLog("Message sent to $target (length=${text.length})")
 
             val outgoing = WaMessage(
                 sender = "Me (Gateway)",
@@ -192,7 +192,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
         scope.launch {
             _pairingCode.value = code
             _isLoggedIn.value = false
-            addLog("Received pairing code: $code")
+            addLog("Received pairing code")
         }
     }
 
@@ -220,7 +220,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 isOutgoing = false
             )
             _messages.value = listOf(msg) + _messages.value
-            addLog("Received message from $sender: $text")
+            addLog("Received message from $sender")
 
             for (listener in messageListeners) {
                 try {

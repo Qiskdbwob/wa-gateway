@@ -19,7 +19,7 @@ enum class MainTab(
     val unselectedIcon: ImageVector
 ) {
     HOME(
-        title = "Home",
+        title = "Beranda",
         selectedIcon = Icons.Filled.Dashboard,
         unselectedIcon = Icons.Outlined.Dashboard
     ),
@@ -29,17 +29,17 @@ enum class MainTab(
         unselectedIcon = Icons.Outlined.Chat
     ),
     TASKS(
-        title = "Tasks",
+        title = "Tugas",
         selectedIcon = Icons.Filled.Checklist,
         unselectedIcon = Icons.Outlined.Checklist
     ),
     MEMORY(
-        title = "Memory",
+        title = "Memori",
         selectedIcon = Icons.Filled.Memory,
         unselectedIcon = Icons.Outlined.Memory
     ),
     SETTINGS(
-        title = "Settings",
+        title = "Pengaturan",
         selectedIcon = Icons.Filled.Settings,
         unselectedIcon = Icons.Outlined.Settings
     )

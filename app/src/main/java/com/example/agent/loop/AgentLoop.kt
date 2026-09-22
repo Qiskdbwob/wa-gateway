@@ -358,7 +358,7 @@ class AgentLoop(
                 }
 
                 _state.value = AgentState.COMPLETED
-                _state.value = AgentState.IDLE
+                log("AGENT_COMPLETED", "Response delivered for conv=${input.conversationId}")
                 Result.success(finalAgentResponse)
 
             } catch (e: Exception) {
@@ -366,6 +366,10 @@ class AgentLoop(
                 _lastError.value = e.message
                 log("AGENT_FAILURE", "Agent loop unhandled exception: ${e.message}")
                 Result.failure(Exception("Agent tidak dapat memproses pesan saat ini. Silakan coba lagi nanti."))
+            } finally {
+                if (_state.value == AgentState.COMPLETED) {
+                    _state.value = AgentState.IDLE
+                }
             }
         }
     }

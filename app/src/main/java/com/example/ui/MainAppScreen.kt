@@ -81,11 +81,11 @@ fun MainAppScreen(
                     tonalElevation = 2.dp
                 ) {
                     val tabs = listOf(
-                        Triple(MainTab.HOME, "Home", Pair(Icons.Filled.Home, Icons.Outlined.Home)),
+                        Triple(MainTab.HOME, "Beranda", Pair(Icons.Filled.Home, Icons.Outlined.Home)),
                         Triple(MainTab.CHAT, "Chat", Pair(Icons.Filled.Chat, Icons.Outlined.Chat)),
-                        Triple(MainTab.TASKS, "Tasks", Pair(Icons.Filled.Checklist, Icons.Outlined.Checklist)),
-                        Triple(MainTab.MEMORY, "Memory", Pair(Icons.Filled.Memory, Icons.Outlined.Memory)),
-                        Triple(MainTab.SETTINGS, "Settings", Pair(Icons.Filled.Settings, Icons.Outlined.Settings))
+                        Triple(MainTab.TASKS, "Tugas", Pair(Icons.Filled.Checklist, Icons.Outlined.Checklist)),
+                        Triple(MainTab.MEMORY, "Memori", Pair(Icons.Filled.Memory, Icons.Outlined.Memory)),
+                        Triple(MainTab.SETTINGS, "Pengaturan", Pair(Icons.Filled.Settings, Icons.Outlined.Settings))
                     )
 
                     tabs.forEach { (tab, label, icons) ->
