@@ -15,6 +15,7 @@ import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.storage.RoomAgentSessionRepository
+import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
 import com.example.wagateway.WaGatewayManager
@@ -121,7 +122,7 @@ class WhatsAppAgentBridge private constructor(
                     _useEchoFallback.value = saved.useEchoFallback
                     providerConfig.value = ProviderConfig(
                         baseUrl = saved.baseUrl,
-                        apiKey = saved.apiKey,
+                        apiKey = SecretCipher.decrypt(saved.apiKey),
                         modelId = saved.modelId
                     )
                     systemPrompt.value = saved.systemPrompt
@@ -138,8 +139,8 @@ class WhatsAppAgentBridge private constructor(
         }
 
         // Register listener to gateway incoming messages
-        gatewayManager.addMessageListener { sender, text, timestamp ->
-            handleIncomingMessage(sender, text, timestamp)
+        gatewayManager.addMessageListener { sender, chat, isGroup, text, timestamp ->
+            handleIncomingMessage(sender, chat, isGroup, text, timestamp)
         }
     }
 
@@ -212,7 +213,7 @@ class WhatsAppAgentBridge private constructor(
                         isAutoReplyEnabled = _isAutoReplyEnabled.value,
                         useEchoFallback = _useEchoFallback.value,
                         baseUrl = providerConfig.value.baseUrl,
-                        apiKey = providerConfig.value.apiKey,
+                        apiKey = SecretCipher.encrypt(providerConfig.value.apiKey),
                         modelId = providerConfig.value.modelId,
                         systemPrompt = systemPrompt.value,
                         updatedAt = System.currentTimeMillis()
@@ -224,16 +225,33 @@ class WhatsAppAgentBridge private constructor(
         }
     }
 
-    private fun handleIncomingMessage(sender: String, text: String, timestamp: Long) {
+    private fun handleIncomingMessage(
+        sender: String,
+        chat: String,
+        isGroup: Boolean,
+        text: String,
+        timestamp: Long
+    ) {
         if (!_isAutoReplyEnabled.value) return
-        if (sender.isBlank() || sender.startsWith("Me", ignoreCase = true)) return
-        if (text.isBlank()) return
+        if (text.isBlank() || sender.isBlank()) return
+
+        // Group auto-reply is intentionally out of scope for now: the agent must not
+        // post into a group conversation without explicit configuration.
+        if (isGroup) {
+            agentLoop.log(
+                "MESSAGE_IGNORED",
+                "Pesan grup dari '$chat' diabaikan (auto-reply hanya untuk chat pribadi)."
+            )
+            return
+        }
 
         scope.launch {
             updateModelRouter()
 
             val input = AgentInput(
-                conversationId = sender,
+                // Reply target must be the conversation JID, not the (possibly device
+                // specific) sender JID, so the answer lands in the right chat.
+                conversationId = chat.ifBlank { sender },
                 senderId = sender,
                 content = text,
                 timestamp = if (timestamp > 0) timestamp * 1000L else System.currentTimeMillis(),

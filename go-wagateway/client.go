@@ -65,6 +65,13 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 	case *events.LoggedOut:
 		c.listener.OnConnectionStatus("Logged out")
 	case *events.Message:
+		// Never forward our own outgoing messages back into the agent, otherwise the
+		// agent would reply to itself. whatsmeow exposes this through Info.IsFromMe,
+		// so no guessing on the Kotlin side is required.
+		if evt.Info.IsFromMe {
+			return
+		}
+
 		var text string
 		if evt.Message != nil {
 			text = evt.Message.GetConversation()
@@ -72,11 +79,15 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 				text = evt.Message.GetExtendedTextMessage().GetText()
 			}
 		}
-		if text != "" {
-			sender := evt.Info.Sender.ToNonAD().String()
-			timestamp := evt.Info.Timestamp.Unix()
-			c.listener.OnMessage(sender, text, timestamp)
+		if text == "" {
+			return
 		}
+
+		// Info.Sender is the author of the message (the participant inside a group),
+		// while Info.Chat is the conversation that must be used when replying.
+		sender := evt.Info.Sender.ToNonAD().String()
+		chat := evt.Info.Chat.ToNonAD().String()
+		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, evt.Info.Timestamp.Unix())
 	}
 }
 

@@ -102,72 +102,76 @@ fun TasksScreen(
 
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
-    // Derive actual task records from state and persistent sessions
+    // Task list is derived ONLY from state that really exists in the app:
+    // the live AgentState, the persisted Room sessions and the last real error.
+    // No placeholder/dummy tasks are invented here.
     val tasks = remember(agentState, agentLogs, sessions, agentLastError, modelId) {
         val list = mutableListOf<AgentTaskRecord>()
 
-        // 1. Current Running / Waiting task if agent is active
-        if (agentState == AgentState.THINKING || agentState == AgentState.CALLING_TOOL) {
-            list.add(
+        // 1. Live execution: the agent is actively working on a message right now.
+        when (agentState) {
+            AgentState.THINKING -> list.add(
                 AgentTaskRecord(
                     id = "active-task",
-                    title = if (agentState == AgentState.CALLING_TOOL) "Menjalankan Tool Eksternal" else "Memproses Pesan Masuk",
-                    prompt = "Menganalisis konteks percakapan dan menyusun respon cerdas",
+                    title = "Memproses pesan",
+                    prompt = "Memanggil model provider untuk menyusun balasan",
                     modelId = modelId.ifBlank { "gpt-4o-mini" },
-                    tools = if (agentState == AgentState.CALLING_TOOL) listOf("Tool Caller", "Context Retriever") else emptyList(),
                     status = TaskFilter.RUNNING,
-                    timeline = timeFormat.format(Date()),
-                    result = null,
-                    error = null
+                    timeline = timeFormat.format(Date())
                 )
             )
-        } else if (agentState == AgentState.WAITING_APPROVAL || agentState == AgentState.WAITING_TOOL) {
-            list.add(
+
+            AgentState.RETRYING, AgentState.FALLBACK -> list.add(
+                AgentTaskRecord(
+                    id = "active-task",
+                    title = if (agentState == AgentState.RETRYING) "Mencoba ulang model" else "Beralih ke model fallback",
+                    prompt = "Pemulihan otomatis setelah kegagalan provider",
+                    modelId = modelId.ifBlank { "gpt-4o-mini" },
+                    status = TaskFilter.RUNNING,
+                    timeline = timeFormat.format(Date())
+                )
+            )
+
+            AgentState.WAITING_APPROVAL, AgentState.WAITING_TOOL -> list.add(
                 AgentTaskRecord(
                     id = "waiting-task",
-                    title = "Menunggu Persetujuan / Input",
-                    prompt = "Menunggu otorisasi atau penyelesaian operasi tool",
+                    title = "Menunggu persetujuan",
+                    prompt = "Menunggu keputusan pengguna sebelum melanjutkan",
                     modelId = modelId.ifBlank { "gpt-4o-mini" },
-                    tools = listOf("Tool Approval"),
                     status = TaskFilter.WAITING,
-                    timeline = timeFormat.format(Date()),
-                    result = null,
-                    error = null
+                    timeline = timeFormat.format(Date())
                 )
             )
+
+            else -> Unit
         }
 
-        // 2. Completed / historical tasks derived from sessions
+        // 2. Real history: every persisted conversation with at least one message.
         sessions.forEach { session ->
             if (session.messageCount > 0) {
                 list.add(
                     AgentTaskRecord(
                         id = "sess-${session.sessionId}",
                         title = "Percakapan: ${session.conversationId}",
-                        prompt = session.lastMessagePreview?.ifBlank { "Dialog interaktif dengan pengguna" } ?: "Dialog interaktif dengan pengguna",
+                        prompt = session.lastMessagePreview?.ifBlank { "(tanpa pesan)" } ?: "(tanpa pesan)",
                         modelId = modelId.ifBlank { "gpt-4o-mini" },
-                        tools = listOf("SQLite Context Memory", "Prompt Pipeline"),
                         status = TaskFilter.COMPLETED,
-                        timeline = timeFormat.format(Date(session.updatedAt)),
-                        result = "Berhasil memproses ${session.messageCount} pesan dalam sesi ini.",
-                        error = null
+                        timeline = timeFormat.format(Date(session.updatedAt))
                     )
                 )
             }
         }
 
-        // 3. Error task if last error exists
+        // 3. Real failure recorded by the Agent Loop.
         if (agentLastError != null) {
             list.add(
                 AgentTaskRecord(
                     id = "last-error-task",
-                    title = "Eksekusi Gagal",
+                    title = "Eksekusi gagal",
                     prompt = "Permintaan inferensi ke model provider",
                     modelId = modelId.ifBlank { "gpt-4o-mini" },
-                    tools = listOf("ModelProvider"),
                     status = TaskFilter.FAILED,
                     timeline = timeFormat.format(Date()),
-                    result = null,
                     error = agentLastError
                 )
             )
@@ -229,10 +233,24 @@ fun TasksScreen(
                     .padding(24.dp),
                 contentAlignment = Alignment.Center
             ) {
+                val (emptyTitle, emptySubtitle) = when (selectedFilter) {
+                    TaskFilter.ALL ->
+                        "Belum ada task aktif." to "Tugas yang sedang berjalan atau riwayat percakapan akan muncul di sini."
+                    TaskFilter.RUNNING ->
+                        "Tidak ada task berjalan." to "Task muncul saat agent sedang memproses pesan."
+                    TaskFilter.WAITING ->
+                        "Tidak ada task menunggu." to "Permintaan persetujuan akan muncul di sini."
+                    TaskFilter.SCHEDULED ->
+                        "Belum ada task terjadwal." to "Penjadwalan task belum tersedia pada versi ini."
+                    TaskFilter.COMPLETED ->
+                        "Belum ada percakapan selesai." to "Riwayat percakapan akan tampil di sini setelah agent membalas."
+                    TaskFilter.FAILED ->
+                        "Tidak ada kegagalan." to "Error saat memproses pesan akan tercatat di sini."
+                }
                 EmptyStateCard(
                     icon = Icons.Outlined.Checklist,
-                    title = "Belum ada task aktif.",
-                    subtitle = "Tugas yang sedang berjalan atau riwayat eksekusi akan muncul di sini."
+                    title = emptyTitle,
+                    subtitle = emptySubtitle
                 )
             }
         } else {

@@ -54,8 +54,10 @@ private val LightColorScheme =
 @Composable
 fun MyApplicationTheme(
   darkTheme: Boolean = isSystemInDarkTheme(),
-  // Dynamic color is available on Android 12+
-  dynamicColor: Boolean = true,
+  // Dynamic color is intentionally OFF by default: it would replace the branded
+  // emerald / WhatsApp green palette with the user's wallpaper colors, which makes
+  // the app look inconsistent across devices.
+  dynamicColor: Boolean = false,
   content: @Composable () -> Unit,
 ) {
   val colorScheme =

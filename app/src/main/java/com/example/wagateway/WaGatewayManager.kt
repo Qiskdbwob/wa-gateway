@@ -46,13 +46,13 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
-    private val messageListeners = java.util.concurrent.CopyOnWriteArrayList<(sender: String, text: String, timestamp: Long) -> Unit>()
+    private val messageListeners = java.util.concurrent.CopyOnWriteArrayList<IncomingMessageListener>()
 
-    fun addMessageListener(listener: (sender: String, text: String, timestamp: Long) -> Unit) {
+    fun addMessageListener(listener: IncomingMessageListener) {
         messageListeners.add(listener)
     }
 
-    fun removeMessageListener(listener: (sender: String, text: String, timestamp: Long) -> Unit) {
+    fun removeMessageListener(listener: IncomingMessageListener) {
         messageListeners.remove(listener)
     }
 
@@ -75,7 +75,10 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
             val loggedIn = client?.isLoggedIn() ?: false
             _isLoggedIn.value = loggedIn
             addLog("Client initialized. Has previous session: $loggedIn")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Throwable, not Exception: a missing/incompatible native library raises
+            // UnsatisfiedLinkError, and the app must degrade to an error state instead
+            // of crashing at startup.
             addLog("Error initializing client: ${e.message}")
             _connectionStatus.value = "Init Error: ${e.message}"
         }
@@ -94,10 +97,10 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 val connected = client?.isConnected() ?: false
                 _isLoggedIn.value = loggedIn
                 _isConnected.value = connected
-            } catch (e: Exception) {
-                addLog("Connection failed: ${e.message}")
-                _connectionStatus.value = "Connection Error: ${e.message}"
-            }
+        } catch (e: Throwable) {
+            addLog("Connection failed: ${e.message}")
+            _connectionStatus.value = "Connection Error: ${e.message}"
+        }
         }
     }
 
@@ -110,9 +113,9 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 _connectionStatus.value = "Disconnected"
                 _qrCode.value = null
                 _pairingCode.value = null
-            } catch (e: Exception) {
-                addLog("Disconnect error: ${e.message}")
-            }
+        } catch (e: Throwable) {
+            addLog("Disconnect error: ${e.message}")
+        }
         }
     }
 
@@ -128,7 +131,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
             _pairingCode.value = code
             addLog("Pairing code received: $code")
             Result.success(code)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             addLog("Pairing code error: ${e.message}")
             _connectionStatus.value = "Code Error: ${e.message}"
             Result.failure(e)
@@ -152,7 +155,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
             )
             _messages.value = listOf(outgoing) + _messages.value
             Result.success(Unit)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             addLog("Failed to send message: ${e.message}")
             Result.failure(e)
         }
@@ -168,9 +171,9 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 _qrCode.value = null
                 _pairingCode.value = null
                 _connectionStatus.value = "Logged out"
-            } catch (e: Exception) {
-                addLog("Logout error: ${e.message}")
-            }
+        } catch (e: Throwable) {
+            addLog("Logout error: ${e.message}")
+        }
         }
     }
 
@@ -211,7 +214,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
         }
     }
 
-    override fun onMessage(sender: String, text: String, timestamp: Long) {
+    override fun onMessage(sender: String, chat: String, isGroup: Boolean, text: String, timestamp: Long) {
         scope.launch {
             val msg = WaMessage(
                 sender = sender,
@@ -220,12 +223,12 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 isOutgoing = false
             )
             _messages.value = listOf(msg) + _messages.value
-            addLog("Received message from $sender")
+            addLog("Received message from $sender${if (isGroup) " in group $chat" else ""}")
 
             for (listener in messageListeners) {
                 try {
-                    listener(sender, text, timestamp)
-                } catch (e: Exception) {
+                    listener(sender, chat, isGroup, text, timestamp)
+                } catch (e: Throwable) {
                     addLog("Error in message listener: ${e.message}")
                 }
             }
@@ -243,3 +246,14 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
         }
     }
 }
+
+/**
+ * Callback contract for incoming WhatsApp text messages.
+ *
+ * @param sender the author of the message (group participant inside a group chat)
+ * @param chat   the conversation JID, use it as the reply target
+ * @param isGroup true when the message came from a group conversation
+ * @param text   plain text content
+ * @param timestamp unix timestamp in seconds
+ */
+typealias IncomingMessageListener = (sender: String, chat: String, isGroup: Boolean, text: String, timestamp: Long) -> Unit

@@ -84,6 +84,8 @@ fun MemoryScreen(
     val modelId by viewModel.agentModelId.collectAsState()
     val isAutoReply by viewModel.isAgentAutoReply.collectAsState()
     val useEchoFallback by viewModel.useEchoFallback.collectAsState()
+    val isConnected by viewModel.isConnected.collectAsState()
+    val apiKey by viewModel.agentApiKey.collectAsState()
 
     var selectedTab by remember { mutableStateOf(MemoryCategory.SESSIONS) }
     var sessionToDelete by remember { mutableStateOf<AgentSession?>(null) }
@@ -397,15 +399,44 @@ fun MemoryScreen(
                 }
 
                 MemoryCategory.SKILLS -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        val skillsList = listOf(
-                            Triple("WhatsApp Gateway Integration", "whatsmeow Go bridge multi-device & event listener", true),
-                            Triple("Room SQLite Persistence", "Database lokal untuk sesi, riwayat chat, dan konfigurasi", true),
-                            Triple("OpenAI-Compatible Inference", "Konektor HTTP REST untuk OpenAI / LM Studio / Ollama", true),
-                            Triple("Echo Fallback Engine", "Mekanisme balasan cerdas offline tanpa dependensi cloud", useEchoFallback)
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        EmptyStateCard(
+                            icon = Icons.Default.AutoAwesome,
+                            title = "Belum ada skill agent",
+                            subtitle = "Sistem skill/tool eksternal belum diimplementasikan. Saat ini agent hanya menangani percakapan teks melalui model provider."
                         )
 
-                        skillsList.forEach { (name, desc, active) ->
+                        Text(
+                            text = "Komponen Runtime Aktif",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        // Status di bawah ini dibaca langsung dari state aplikasi yang nyata.
+                        val runtimeStatus = listOf(
+                            Triple(
+                                "WhatsApp Gateway (whatsmeow)",
+                                "Koneksi perangkat tertaut melalui Go bridge",
+                                isConnected
+                            ),
+                            Triple(
+                                "Room SQLite Persistence",
+                                "Sesi, riwayat chat, dan konfigurasi tersimpan lokal",
+                                true
+                            ),
+                            Triple(
+                                "Model Provider (OpenAI compatible)",
+                                if (apiKey.isBlank()) "API Key belum diisi" else "API Key tersimpan & terenkripsi",
+                                apiKey.isNotBlank()
+                            ),
+                            Triple(
+                                "Echo Fallback",
+                                "Menjawab secara lokal saat provider tidak tersedia",
+                                useEchoFallback
+                            )
+                        )
+
+                        runtimeStatus.forEach { (name, desc, active) ->
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(10.dp),
