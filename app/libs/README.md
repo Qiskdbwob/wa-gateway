@@ -9,7 +9,7 @@ rebuilt whenever `go-wagateway/**` changes). It is produced by the
 
 ```bash
 # what CI runs, from the go-wagateway directory
-gomobile bind -target=android/arm64,android/amd64 -androidapi 24 \
+gomobile bind -target=android/arm64,android/amd64,android/arm -androidapi 24 \
   -o ../app/libs/wagateway.aar .
 ```
 

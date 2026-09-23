@@ -64,7 +64,7 @@ jobs:
         working-directory: go-wagateway
         run: |
           gomobile init
-          gomobile bind -target=android/arm64,android/amd64 -androidapi 24 -o ../app/libs/wagateway.aar .
+          gomobile bind -target=android/arm64,android/amd64,android/arm -androidapi 24 -o ../app/libs/wagateway.aar .
 
       - name: Upload AAR
         uses: actions/upload-artifact@v7

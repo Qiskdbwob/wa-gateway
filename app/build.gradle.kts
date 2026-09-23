@@ -20,11 +20,14 @@ android {
 
     ndk {
       // The Go/whatsmeow gateway (libgojni.so) is only bound for these ABIs — see the
-      // `gomobile bind -target=android/arm64,android/amd64` step in
+      // `gomobile bind -target=android/arm64,android/amd64,android/arm` step in
       // .github/workflows/build.yml. Declaring them here stops Play/devices from
       // installing the app on an ABI that has no libgojni.so, which would otherwise
       // fail at startup with UnsatisfiedLinkError.
-      abiFilters += listOf("arm64-v8a", "x86_64")
+      //
+      // Adding "x86" here would additionally require adding android/386 to the
+      // gomobile bind target.
+      abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
     }
   }
 

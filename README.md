@@ -81,8 +81,13 @@ cd go-wagateway
 go install golang.org/x/mobile/cmd/gobind@latest
 go install golang.org/x/mobile/cmd/gomobile@latest
 gomobile init
-gomobile bind -target=android/arm64,android/amd64 -androidapi 24 -o ../app/libs/wagateway.aar .
+gomobile bind -target=android/arm64,android/amd64,android/arm -androidapi 24 -o ../app/libs/wagateway.aar .
 ```
+
+Target ABI yang dihasilkan: `arm64-v8a`, `x86_64`, dan `armeabi-v7a` (32-bit ARM).
+`app/build.gradle.kts` memakai `abiFilters` untuk ABI yang sama supaya aplikasi tidak pernah
+ter-install di perangkat yang tidak punya `libgojni.so`. Dukungan 64-bit tetap ada, jadi syarat
+Google Play (wajib menyediakan 64-bit bila menyediakan 32-bit) terpenuhi.
 
 ### 2. Build aplikasi
 
@@ -156,6 +161,8 @@ aktif, agent tetap membalas secara lokal tanpa jaringan.
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
+* Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
+  perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Hanya pesan teks; media diabaikan.
 * Belum ada tool system/terminal/memory layer — lihat tabel status di atas.
 * `applicationId` masih memakai nilai bawaan template.
