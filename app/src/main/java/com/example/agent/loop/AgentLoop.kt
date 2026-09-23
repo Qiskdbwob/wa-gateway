@@ -63,8 +63,11 @@ val AgentState.isBusy: Boolean
         AgentState.FAILED -> false
     }
 
-/** Longest tool output forwarded back to the model, so one chatty tool cannot flood the context. */
-private const val TOOL_OUTPUT_LIMIT = 4_000
+/**
+ * Backstop for tool output forwarded back to the model. Individual tools (e.g. `read_file`) cut
+ * their own output earlier and say so, which the model understands better than a silent clip here.
+ */
+private const val TOOL_OUTPUT_LIMIT = 20_000
 
 class AgentLoop(
     var agent: Agent = Agent(),

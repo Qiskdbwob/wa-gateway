@@ -19,6 +19,7 @@ import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
 import com.example.agent.tool.ToolRegistry
+import com.example.agent.workspace.Workspace
 import com.example.wagateway.OutgoingMessageSender
 import com.example.wagateway.WaGatewayManager
 import kotlinx.coroutines.CoroutineScope
@@ -117,10 +118,17 @@ class WhatsAppAgentBridge private constructor(
     )
 
     /**
+     * Phase 7 — the only place the file tools are allowed to touch. Lives in app-internal
+     * storage (`filesDir`), so nothing outside the sandbox is reachable even if the model
+     * asks for an absolute path.
+     */
+    val workspace: Workspace = Workspace.of(context.filesDir, "default-agent")
+
+    /**
      * Phase 6 — tools the Agent Loop may call. Registering a tool here is the only step
      * needed to make it available to the model; the loop itself never references one.
      */
-    val toolRegistry: ToolRegistry = ToolRegistry.withBuiltIns()
+    val toolRegistry: ToolRegistry = ToolRegistry.withBuiltIns(workspace)
 
     val agentLoop = AgentLoop(
         agent = Agent(

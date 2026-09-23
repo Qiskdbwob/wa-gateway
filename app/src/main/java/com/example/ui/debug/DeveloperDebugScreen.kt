@@ -73,6 +73,7 @@ fun DeveloperDebugScreen(
     val isTesting by viewModel.isTestingAgent.collectAsState()
     val agentLogs by viewModel.agentLogs.collectAsState()
     val agentTools = viewModel.agentTools
+    val workspacePath = viewModel.agentWorkspacePath
     val modelId by viewModel.agentModelId.collectAsState()
     val baseUrl by viewModel.agentBaseUrl.collectAsState()
     val useEchoFallback by viewModel.useEchoFallback.collectAsState()
@@ -197,6 +198,19 @@ fun DeveloperDebugScreen(
                             text = "Room SQLite (agent_database)",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("Workspace tool (sandbox):", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = workspacePath,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
                         )
                     }
                 }

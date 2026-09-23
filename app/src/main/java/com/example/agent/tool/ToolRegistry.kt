@@ -4,6 +4,7 @@ import com.example.agent.model.Tool
 import com.example.agent.model.ToolDefinition
 import com.example.agent.model.ToolPermission
 import com.example.agent.model.toDefinition
+import com.example.agent.workspace.Workspace
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -45,7 +46,19 @@ class ToolRegistry(initialTools: List<Tool> = emptyList()) {
     fun definitions(): List<ToolDefinition> = safeTools().map { it.toDefinition() }
 
     companion object {
-        /** Registry with the tools shipped by the app itself. */
-        fun withBuiltIns(): ToolRegistry = ToolRegistry(listOf(CurrentTimeTool()))
+        /**
+         * Registry with the tools shipped by the app itself.
+         *
+         * The file tools are registered only when a [workspace] is given: without the Phase 7
+         * sandbox there is nothing that may touch files, so the tool must not exist at all
+         * instead of failing at call time.
+         */
+        fun withBuiltIns(workspace: Workspace? = null): ToolRegistry {
+            val tools = mutableListOf<Tool>(CurrentTimeTool())
+            if (workspace != null) {
+                tools += workspaceFileTools(workspace)
+            }
+            return ToolRegistry(tools)
+        }
     }
 }

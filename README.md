@@ -23,6 +23,7 @@ WhatsApp  ⇄  Go gateway (whatsmeow)  ⇄  Kotlin Bridge  ⇄  Agent Loop  ⇄ 
 | Gateway | `com.example.wagateway` | `WaGatewayManager` (StateFlow), `WaGatewayService` (foreground), `WaGatewayViewModel` |
 | Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
 | Persistensi | `com.example.agent.storage` | Room: `agent_sessions`, `agent_messages`, `agent_configs` + `SecretCipher` (API key) |
+| Workspace | `com.example.agent.workspace` | `Workspace` — root per-agent di `filesDir/workspaces/<agentId>` + guard path (anti `..` & symlink escape) |
 | Adapter | `WhatsAppAgentBridge` | Menjembatani gateway ⇄ agent loop, memuat/menyimpan konfigurasi |
 
 **Alur pesan**
@@ -60,8 +61,9 @@ antar kontak tidak pernah tercampur.
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
 | Pesan media (gambar/video/audio/dokumen) | ❌ |
-| Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ (baru 1 tool bawaan: `current_time`) |
-| Workspace isolation, terminal, permission/approval | ❌ |
+| Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
+| Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
+| Terminal, permission/approval | ❌ |
 | Memory layer (episodic/knowledge/learning), search, context manager | ❌ |
 | Subagent, council, multimodal delegation | ❌ |
 | Task/job system, scheduler, MCP, knowledge UI, browser automation | ❌ |
@@ -229,21 +231,41 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 * Hanya pertanyaan pengguna dan jawaban akhir yang ditulis ke riwayat percakapan; pesan tool bersifat
   internal turn. Detail teknisnya tetap terekam di log aktivitas agent.
 
+### Phase 7 — Workspace isolation & file tools
+
+* Setiap agent punya ruang sendiri di `filesDir/workspaces/<agentId>` — app-internal storage, jadi
+  aplikasi lain tidak bisa membacanya.
+* Semua path dari model di-resolve lewat `Workspace.resolve()`: path hasil **canonical** wajib masih
+  berada di dalam root. `..`, `sub/../../x`, dan symlink yang menunjuk keluar workspace ditolak;
+  path absolut seperti `/etc/passwd` dibaca sebagai path relatif di dalam workspace, bukan path
+  sistem.
+* Delapan file tool: `list_files`, `read_file`, `write_file`, `append_file`, `move_path`,
+  `copy_path`, `delete_path`, `make_directory`. Semuanya `SAFE` karena sandbox-nya yang menjadi
+  permission — jadi tidak ada tool file yang bisa keluar dari workspace walau model memintanya.
+* Penghapusan direktori yang masih berisi wajib memakai `recursive=true`, dan akar workspace tidak
+  bisa dihapus sama sekali.
+* Argumen tool dibaca oleh pembaca JSON kecil milik sendiri (`JsonArgs`) yang sadar string, jadi isi
+  file yang mirip JSON tidak bisa mengelabui pembacaan argumen.
+* Developer → Diagnostics menampilkan path workspace yang sedang dipakai, dan Tool Registry
+  menampilkan seluruh tool terdaftar beserta kelas permission-nya.
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Hanya pesan teks; media diabaikan.
-* Tool System masih berisi satu tool bawaan (`current_time`); tool file/terminal baru menyusul di
-  Phase 7–8 karena wajib lewat workspace + permission layer.
+* Tool bawaan saat ini: `current_time` + 8 file tool yang terkunci di dalam workspace. Terminal
+  menyusul di Phase 8 dan baru akan jalan lewat lapisan approval (Phase 9).
+* `read_file` memotong isi pada 16.000 karakter dan memberi tahu model bahwa isinya dipotong;
+  pembacaan bertahap (offset/limit) belum ada.
 * `applicationId` masih memakai nilai bawaan template.
 * `.env.example` masih berisi sisa template AI Studio dan tidak dipakai oleh build ini.
 
 ## Roadmap berikutnya
 
-Urutan yang disarankan (mengikuti `DOC/context-2.md`): Workspace isolation → Terminal →
-Permission/Approval → Search → Memory layer → Learning → Context Manager → Subagent → Council →
-Multimodal → Observability → Task/Scheduler → MCP → Knowledge UI → Browser → WhatsApp media.
+Urutan yang disarankan (mengikuti `DOC/context-2.md`): Terminal → Permission/Approval → Search →
+Memory layer → Learning → Context Manager → Subagent → Council → Multimodal → Observability →
+Task/Scheduler → MCP → Knowledge UI → Browser → WhatsApp media.
 
 Dokumen rencana lengkap ada di `DOC/`.

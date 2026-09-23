@@ -60,6 +60,9 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** Phase 6: tools registered on the Agent Loop, shown on the Developer screen. */
     val agentTools: List<Tool> = agentBridge.toolRegistry.all()
+
+    /** Phase 7: sandbox root that the file tools can never leave. */
+    val agentWorkspacePath: String = agentBridge.workspace.rootPath
     val agentSystemPrompt = MutableStateFlow(agentBridge.systemPrompt.value)
     val agentBaseUrl = MutableStateFlow(agentBridge.providerConfig.value.baseUrl)
     val agentApiKey = MutableStateFlow(agentBridge.providerConfig.value.apiKey)
