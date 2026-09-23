@@ -7,12 +7,14 @@ import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentResponse
 import com.example.agent.model.AgentRole
 import com.example.agent.model.ModelRequest
+import com.example.agent.model.ToolResult
 import com.example.agent.provider.EchoTestProvider
 import com.example.agent.provider.ModelProvider
 import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.storage.AgentSessionRepository
+import com.example.agent.tool.ToolRegistry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,12 +42,41 @@ enum class AgentState {
     FAILED
 }
 
+/**
+ * True while the agent is still working on the current turn. The UI uses it to keep the
+ * composer disabled and to show the matching activity bubble while a tool runs.
+ */
+val AgentState.isBusy: Boolean
+    get() = when (this) {
+        AgentState.THINKING,
+        AgentState.CALLING_TOOL,
+        AgentState.WAITING_TOOL,
+        AgentState.RETRYING,
+        AgentState.FALLBACK,
+        AgentState.DELEGATING,
+        AgentState.WAITING_SUB_AGENT,
+        AgentState.REFLECTING,
+        AgentState.WAITING_APPROVAL -> true
+
+        AgentState.IDLE,
+        AgentState.COMPLETED,
+        AgentState.FAILED -> false
+    }
+
+/** Longest tool output forwarded back to the model, so one chatty tool cannot flood the context. */
+private const val TOOL_OUTPUT_LIMIT = 4_000
+
 class AgentLoop(
     var agent: Agent = Agent(),
     modelProvider: ModelProvider = EchoTestProvider(),
     private val sessionRepository: AgentSessionRepository,
     var modelRouter: ModelRouter? = null,
-    var retryPolicy: RetryPolicy = RetryPolicy()
+    var retryPolicy: RetryPolicy = RetryPolicy(),
+    /**
+     * Phase 6 — tools the loop may look up by name. A null or empty registry simply means the
+     * model is asked to answer without tools; the loop never references a concrete tool.
+     */
+    var toolRegistry: ToolRegistry? = null
 ) {
     var modelProvider: ModelProvider = modelProvider
         set(value) {
@@ -74,6 +105,10 @@ class AgentLoop(
 
     private val _activityLogs = MutableStateFlow<List<String>>(emptyList())
     val activityLogs: StateFlow<List<String>> = _activityLogs.asStateFlow()
+
+    /** Human readable tool activity of the running turn, e.g. "Menjalankan tool current_time...". */
+    private val _currentActivity = MutableStateFlow<String?>(null)
+    val currentActivity: StateFlow<String?> = _currentActivity.asStateFlow()
 
     // Per-conversation mutex to prevent race conditions across concurrent messages
     private val conversationMutexes = ConcurrentHashMap<String, Mutex>()
@@ -120,8 +155,12 @@ class AgentLoop(
      *       ↓
      * Send Response (via Channel Adapter)
      *
+     * When a Tool Registry is attached (Phase 6) the model may answer with tool calls instead
+     * of text; the loop then runs those tools through the registry and asks the model again,
+     * bounded by `agent.maxToolIterations`.
+     *
      * @param onProgress optional callback used to surface long running work (retries,
-     *   fallbacks and, later on, tool calls) to the user. It is scoped to this single
+     *   fallbacks and tool calls) to the user. It is scoped to this single
      *   call — never global state — so concurrent chats cannot cross-talk. For WhatsApp
      *   the bridge uses it to update the "sedang berpikir..." bubble.
      */
@@ -196,6 +235,19 @@ class AgentLoop(
 
                 val effectiveRetryPolicy = modelRouter?.retryPolicy ?: retryPolicy
 
+                // Phase 6 — tools come from the registry, never hardcoded here. Only SAFE tools
+                // are advertised (see ToolRegistry.definitions()), so a tool that would need
+                // manual approval is not offered while there is no approval layer yet.
+                val availableTools = toolRegistry?.definitions().orEmpty()
+                var advertiseTools = agent.toolsEnabled && availableTools.isNotEmpty()
+                val maxToolIterations = agent.maxToolIterations.coerceIn(0, 10)
+                if (advertiseTools) {
+                    log(
+                        "TOOLS_AVAILABLE",
+                        "${availableTools.size} tool ditawarkan (${availableTools.joinToString { it.name }}), maxIterasi=$maxToolIterations"
+                    )
+                }
+
                 var totalAttemptsUsed = 0
                 val maxTotalBudget = effectiveRetryPolicy.maxTotalAttemptsBudget
 
@@ -233,15 +285,17 @@ class AgentLoop(
                         }
 
                         val requestModel = target.modelId?.ifBlank { null } ?: agent.modelId
+                        val requestTools = if (advertiseTools) availableTools else emptyList()
                         log(
                             "MODEL_REQUEST",
-                            "target=${target.id}, provider=${target.provider.name}, model=$requestModel, attempt=$modelAttempt, totalAttempts=$totalAttemptsUsed, contextCount=${activeHistory.size}"
+                            "target=${target.id}, provider=${target.provider.name}, model=$requestModel, attempt=$modelAttempt, totalAttempts=$totalAttemptsUsed, contextCount=${activeHistory.size}, tools=${requestTools.size}"
                         )
 
                         val modelRequest = ModelRequest(
                             messages = activeHistory,
                             systemPrompt = agent.systemPrompt,
-                            modelId = requestModel
+                            modelId = requestModel,
+                            tools = requestTools
                         )
 
                         val callStart = System.currentTimeMillis()
@@ -249,7 +303,166 @@ class AgentLoop(
                         val latencyMs = System.currentTimeMillis() - callStart
 
                         if (modelResult.isSuccess) {
-                            val modelResponse = modelResult.getOrThrow()
+                            var modelResponse = modelResult.getOrThrow()
+                            var toolLoopError: Throwable? = null
+                            var toolLoopLatencyMs = latencyMs
+                            var toolBudgetExhausted = false
+                            var toolIteration = 0
+
+                            // Phase 6 — tool round trips. The model may answer with tool calls
+                            // instead of text; each round appends the assistant tool-call turn plus
+                            // one message per tool result and asks the model again. Bounded by
+                            // agent.maxToolIterations so a model that keeps asking for tools can
+                            // never spin forever.
+                            while (modelResponse.toolCalls.isNotEmpty() && toolLoopError == null) {
+                                val toolCalls = modelResponse.toolCalls
+                                if (toolIteration >= maxToolIterations) {
+                                    toolBudgetExhausted = true
+                                    log(
+                                        "TOOL_BUDGET_EXCEEDED",
+                                        "Model masih meminta tool setelah $maxToolIterations iterasi (${toolCalls.joinToString { it.name }}). Iterasi dihentikan."
+                                    )
+                                    break
+                                }
+                                toolIteration++
+                                _state.value = AgentState.CALLING_TOOL
+                                log(
+                                    "TOOL_CALLS_REQUESTED",
+                                    "iteration=$toolIteration/$maxToolIterations, target=${target.id}, model=$requestModel, tools=${toolCalls.joinToString { it.name }}"
+                                )
+
+                                // The assistant turn that asked for the calls has to be part of the
+                                // follow-up request, otherwise providers reject the tool results
+                                // that answer it.
+                                activeHistory = (activeHistory + AgentMessage(
+                                    id = "tool-call-${input.messageId}-$toolIteration",
+                                    sessionId = session.sessionId,
+                                    role = AgentRole.ASSISTANT,
+                                    content = modelResponse.content,
+                                    timestamp = System.currentTimeMillis(),
+                                    toolCalls = toolCalls
+                                )).toMutableList()
+
+                                for (call in toolCalls) {
+                                    _state.value = AgentState.WAITING_TOOL
+                                    _currentActivity.value = "Menjalankan tool ${call.name}..."
+                                    emitProgress("🔧 Menggunakan tool: ${call.name}...")
+
+                                    val tool = toolRegistry?.get(call.name)
+                                    val toolStart = System.currentTimeMillis()
+                                    val toolResult = if (tool == null) {
+                                        log("TOOL_ERROR", "Tool '${call.name}' tidak terdaftar di Tool Registry.")
+                                        ToolResult(
+                                            success = false,
+                                            output = "",
+                                            error = "Tool '${call.name}' tidak tersedia pada agent ini."
+                                        )
+                                    } else {
+                                        try {
+                                            tool.execute(call.arguments)
+                                        } catch (e: Exception) {
+                                            log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
+                                            ToolResult(
+                                                success = false,
+                                                output = "",
+                                                error = "Tool '${call.name}' gagal: ${e.message}"
+                                            )
+                                        }
+                                    }
+                                    val toolLatencyMs = System.currentTimeMillis() - toolStart
+
+                                    log(
+                                        "TOOL_RESULT",
+                                        "tool=${call.name}, success=${toolResult.success}, latency=${toolLatencyMs}ms, output=\"${toolResult.output.take(120)}\", error=${toolResult.error?.take(120) ?: "none"}"
+                                    )
+                                    emitProgress(
+                                        if (toolResult.success) {
+                                            "🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
+                                        } else {
+                                            "🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
+                                        }
+                                    )
+
+                                    activeHistory = (activeHistory + AgentMessage(
+                                        id = UUID.randomUUID().toString(),
+                                        sessionId = session.sessionId,
+                                        role = AgentRole.TOOL,
+                                        content = describeToolResult(call.name, toolResult),
+                                        timestamp = System.currentTimeMillis(),
+                                        toolCallId = call.id,
+                                        toolName = call.name
+                                    )).toMutableList()
+                                }
+
+                                _currentActivity.value = null
+                                _state.value = AgentState.THINKING
+                                log(
+                                    "MODEL_REQUEST",
+                                    "target=${target.id}, provider=${target.provider.name}, model=$requestModel, attempt=$modelAttempt, phase=tool-follow-up, toolIteration=$toolIteration, contextCount=${activeHistory.size}, tools=${if (advertiseTools) availableTools.size else 0}"
+                                )
+
+                                val followUpStart = System.currentTimeMillis()
+                                val followUpResult = target.provider.generate(
+                                    ModelRequest(
+                                        messages = activeHistory,
+                                        systemPrompt = agent.systemPrompt,
+                                        modelId = requestModel,
+                                        tools = if (advertiseTools) availableTools else emptyList()
+                                    )
+                                )
+                                toolLoopLatencyMs = System.currentTimeMillis() - followUpStart
+
+                                if (followUpResult.isFailure) {
+                                    toolLoopError = followUpResult.exceptionOrNull()
+                                        ?: Exception("Tool follow-up model request failed")
+                                } else {
+                                    modelResponse = followUpResult.getOrThrow()
+                                }
+                            }
+
+                            _currentActivity.value = null
+
+                            if (toolLoopError != null) {
+                                // A failed follow-up call is still a model failure, so the Phase 4
+                                // retry/fallback policy applies instead of the loop dying silently.
+                                val toolError = toolLoopError ?: Exception("Tool follow-up model request failed")
+                                val classification = ModelErrorClassifier.classify(toolError)
+                                lastFailureKind = classification.kind
+                                lastErrorMessage = toolError.message
+                                lastFailedTarget = target
+
+                                log(
+                                    "MODEL_ERROR",
+                                    "errorType=${classification.kind}, attempt=$modelAttempt, target=${target.id}, provider=${target.provider.name}, model=$requestModel, latency=${toolLoopLatencyMs}ms, phase=tool-follow-up, error=${toolError.message}"
+                                )
+
+                                if (effectiveRetryPolicy.enabled && classification.isRetryable &&
+                                    modelAttempt < effectiveRetryPolicy.maxAttemptsPerModel &&
+                                    totalAttemptsUsed < maxTotalBudget
+                                ) {
+                                    _state.value = AgentState.RETRYING
+                                    val backoff = classification.retryAfterMs ?: (effectiveRetryPolicy.initialBackoffMs * modelAttempt)
+                                    log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms, phase=tool-follow-up")
+                                    emitProgress("↻ Terjadi kendala saat memakai tool, mencoba ulang...")
+                                    delay(backoff)
+                                    continue // retry on same model
+                                } else if (classification.canFallback) {
+                                    _state.value = AgentState.FALLBACK
+                                    log("FALLBACK_STARTED", "Target '${target.id}' failed on a tool turn (${classification.kind}). Advancing to fallback chain.")
+                                    break // advance to next fallback target
+                                } else {
+                                    log("AGENT_FAILURE", "Target '${target.id}' failed on a tool turn with non-fallbackable error: ${classification.kind}")
+                                    break@targetLoop
+                                }
+                            }
+
+                            if (toolBudgetExhausted) {
+                                lastFailureKind = ModelErrorKind.TOOL_ERROR
+                                lastErrorMessage = "Agent berhenti karena terlalu banyak memakai tool untuk satu permintaan."
+                                lastFailedTarget = target
+                                log("AGENT_FAILURE", "Tool iteration budget exhausted on target '${target.id}'.")
+                                break@targetLoop
+                            }
 
                             // Check for empty response (Section 9)
                             if (modelResponse.content.isBlank()) {
@@ -308,6 +521,18 @@ class AgentLoop(
                                 "MODEL_ERROR",
                                 "errorType=${classification.kind}, attempt=$modelAttempt, target=${target.id}, provider=${target.provider.name}, model=$requestModel, latency=${latencyMs}ms, error=${error.message}"
                             )
+
+                            // Phase 6 — some OpenAI-compatible endpoints reject the "tools" field
+                            // outright (HTTP 400). Retry the same model without tools (this consumes
+                            // one retry attempt) instead of spending the whole fallback chain on a
+                            // schema the endpoint cannot parse.
+                            if (advertiseTools && classification.kind == ModelErrorKind.INVALID_REQUEST) {
+                                advertiseTools = false
+                                _state.value = AgentState.RETRYING
+                                log("TOOL_SCHEMA_REJECTED", "target=${target.id}, provider=${target.provider.name}. Endpoint menolak skema tool; permintaan diulang tanpa tool.")
+                                emitProgress("Model ini belum mendukung tool, mengulang tanpa tool...")
+                                continue
+                            }
 
                             // Context overflow mitigation (Section 8)
                             var canRetryOverflow = false
@@ -395,6 +620,22 @@ class AgentLoop(
                 }
             }
         }
+    }
+
+    /**
+     * Formats a [ToolResult] into the text that a `tool` role message carries. Plain text (not
+     * JSON) so every OpenAI-compatible endpoint can read it, and truncated so one chatty tool
+     * cannot flood the context window.
+     */
+    private fun describeToolResult(toolName: String, result: ToolResult): String {
+        val status = if (result.success) "sukses" else "gagal"
+        val body = result.output.ifBlank { result.error ?: "(tanpa keluaran)" }
+        val truncated = if (body.length > TOOL_OUTPUT_LIMIT) {
+            body.take(TOOL_OUTPUT_LIMIT) + "\n...(dipotong)"
+        } else {
+            body
+        }
+        return "Hasil tool $toolName ($status):\n$truncated"
     }
 
     /**

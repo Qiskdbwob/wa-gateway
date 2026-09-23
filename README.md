@@ -21,7 +21,7 @@ WhatsApp  ⇄  Go gateway (whatsmeow)  ⇄  Kotlin Bridge  ⇄  Agent Loop  ⇄ 
 | Transport WhatsApp | `go-wagateway/` | `NewClient / Connect / Disconnect / SendText / Logout`, event QR & pesan masuk, session SQLite di app-internal storage |
 | Binding | `app/libs/wagateway.aar` (dibuat CI) | Boundary gomobile Go ↔ Kotlin; hanya `String / Boolean / Long` yang melintas |
 | Gateway | `com.example.wagateway` | `WaGatewayManager` (StateFlow), `WaGatewayService` (foreground), `WaGatewayViewModel` |
-| Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `OpenAiCompatibleProvider`, `EchoTestProvider` |
+| Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
 | Persistensi | `com.example.agent.storage` | Room: `agent_sessions`, `agent_messages`, `agent_configs` + `SecretCipher` (API key) |
 | Adapter | `WhatsAppAgentBridge` | Menjembatani gateway ⇄ agent loop, memuat/menyimpan konfigurasi |
 
@@ -30,6 +30,12 @@ WhatsApp  ⇄  Go gateway (whatsmeow)  ⇄  Kotlin Bridge  ⇄  Agent Loop  ⇄ 
 ```
 incoming  WhatsApp → Go event → WaGatewayManager → WhatsAppAgentBridge → AgentInput → AgentLoop
 outgoing  AgentLoop → AgentResponse → WhatsAppChannelAdapter → WaGatewayManager.sendText → WhatsApp
+```
+
+Di dalam satu turn, Agent Loop juga bisa berhenti di tengah jalan untuk memanggil tool:
+
+```
+AgentLoop → ModelProvider (tool_calls) → ToolRegistry → Tool → tool role message → ModelProvider → AgentResponse
 ```
 
 Konversasi dipisah per-chat memakai JID percakapan (`AgentInput.conversationId`), sehingga history
@@ -46,6 +52,7 @@ antar kontak tidak pernah tercampur.
 | Kirim & terima pesan teks | ✅ |
 | Foreground service + notifikasi | ✅ |
 | Agent Loop (session, context, persist, kirim balasan) | ✅ |
+| Tool System (Phase 6: registry, tool-call loop, batas iterasi, progress) | ✅ |
 | Klasifikasi error, retry + exponential backoff, fallback model, budget anti-infinite-loop | ✅ |
 | Model probe (`1 + 1 =`) untuk cek availability & latency | ✅ |
 | Provider OpenAI-compatible + Echo fallback offline | ✅ |
@@ -53,7 +60,8 @@ antar kontak tidak pernah tercampur.
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
 | Pesan media (gambar/video/audio/dokumen) | ❌ |
-| Tool system, workspace isolation, terminal, permission/approval | ❌ |
+| Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ (baru 1 tool bawaan: `current_time`) |
+| Workspace isolation, terminal, permission/approval | ❌ |
 | Memory layer (episodic/knowledge/learning), search, context manager | ❌ |
 | Subagent, council, multimodal delegation | ❌ |
 | Task/job system, scheduler, MCP, knowledge UI, browser automation | ❌ |
@@ -141,6 +149,10 @@ aktif, agent tetap membalas secara lokal tanpa jaringan.
 * Pesan yang dikirim oleh akun sendiri **tidak** diproses (`Info.IsFromMe`), sehingga agent tidak
   bisa membalas dirinya sendiri.
 * Saat ini pesan grup diabaikan untuk mencegah agent mengirim ke grup tanpa konfigurasi.
+* Tool yang berkelas `CONFIRM` **tidak** pernah ditawarkan ke model sampai lapisan approval (Phase 9)
+  benar-benar ada, jadi permission tidak sekadar dekorasi.
+* Agent Loop tidak menyimpan pesan tool ke database; hanya pertanyaan pengguna dan jawaban akhir
+  yang masuk riwayat percakapan. Detail teknis tool masuk ke log aktivitas.
 
 ---
 
@@ -192,10 +204,30 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
   akhir (`Client.BuildEdit`) sehingga chat tetap satu gelembung. Bila WhatsApp menolak edit (window
   edit 20 menit), otomatis fallback ke pesan baru. Bila agent gagal, bubble yang sama diubah menjadi
   pesan error — tidak ada bubble "sedang berpikir" yang menggantung.
-* **Progres nyata**: retry & fallback dari Agent Loop mengedit bubble yang sama (mis.
-  `↻ Mencoba ulang (2/2)...`). Tool call akan memakai saluran progres yang sama pada Phase 6.
+* **Progres nyata**: retry, fallback, dan pemakaian tool dari Agent Loop mengedit bubble yang sama
+  (mis. `↻ Mencoba ulang (2/2)...`, `🔧 Menggunakan tool: current_time...`).
 
 ---
+
+### Phase 6 — Tool System
+
+* Abstraksi `Tool` (`id`, `name`, `description`, `inputSchema`, `permission`, `execute()`),
+  `ToolResult`, dan `ToolCall` menjadi kontrak resmi. `ToolRegistry` menyimpan tool, jadi menambah
+  tool berarti **mendaftarkannya** — Agent Loop tidak perlu diubah dan tidak menyebut tool mana pun
+  secara langsung.
+* Agent Loop sekarang menjalankan siklus penuh: model → `tool_calls` → registry → tool → pesan role
+  `tool` → model lagi, sampai jawaban teks final. Siklus dibatasi `agent.maxToolIterations`
+  (default 4, di-clamp maksimum 10) dan output tool dipotong 4.000 karakter agar konteks tidak jebol.
+* Retry/fallback Phase 4 tetap berlaku untuk panggilan model lanjutan di dalam turn tool. Bila
+  endpoint menolak field `tools` (HTTP 400), permintaan yang sama diulang **tanpa** tool alih-alih
+  membakar seluruh fallback chain.
+* Tool yang tidak terdaftar atau gagal dieksekusi dilaporkan kembali ke model sebagai hasil error
+  (`TOOL_ERROR` di log) — turn tidak crash dan tidak pernah menggantung tanpa jawaban.
+* State `CALLING_TOOL` / `WAITING_TOOL` dipakai sungguhan: bubble chat menampilkan kegiatan tool
+  berjalan, dan **Developer → Tool Registry** memperlihatkan tool terdaftar beserta kelas
+  permission-nya.
+* Hanya pertanyaan pengguna dan jawaban akhir yang ditulis ke riwayat percakapan; pesan tool bersifat
+  internal turn. Detail teknisnya tetap terekam di log aktivitas agent.
 
 ## Batasan yang diketahui
 
@@ -203,14 +235,14 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Hanya pesan teks; media diabaikan.
-* Belum ada tool system/terminal/memory layer — lihat tabel status di atas. Saluran progres untuk
-  tool call sudah tersedia (`AgentLoop.processInput(onProgress)`), tinggal dipakai saat Phase 6.
+* Tool System masih berisi satu tool bawaan (`current_time`); tool file/terminal baru menyusul di
+  Phase 7–8 karena wajib lewat workspace + permission layer.
 * `applicationId` masih memakai nilai bawaan template.
 * `.env.example` masih berisi sisa template AI Studio dan tidak dipakai oleh build ini.
 
 ## Roadmap berikutnya
 
-Urutan yang disarankan (mengikuti `DOC/context-2.md`): Tool System → Workspace isolation → Terminal →
+Urutan yang disarankan (mengikuti `DOC/context-2.md`): Workspace isolation → Terminal →
 Permission/Approval → Search → Memory layer → Learning → Context Manager → Subagent → Council →
 Multimodal → Observability → Task/Scheduler → MCP → Knowledge UI → Browser → WhatsApp media.
 

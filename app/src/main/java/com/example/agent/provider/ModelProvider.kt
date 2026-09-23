@@ -5,6 +5,8 @@ import com.example.agent.model.AgentRole
 import com.example.agent.model.ModelRequest
 import com.example.agent.model.ModelResponse
 import com.example.agent.model.ModelUsage
+import com.example.agent.model.ToolCall
+import com.example.agent.model.ToolDefinition
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -75,19 +77,34 @@ class OpenAiCompatibleProvider(
 
             // Message history
             for (msg in request.messages) {
-                val roleStr = when (msg.role) {
-                    AgentRole.USER -> "user"
-                    AgentRole.ASSISTANT -> "assistant"
-                    AgentRole.SYSTEM -> "system"
-                    AgentRole.TOOL -> "assistant"
-                }
                 val msgObj = JSONObject()
-                msgObj.put("role", roleStr)
-                msgObj.put("content", msg.content)
+                msgObj.put("role", roleForApi(msg.role))
+
+                // An assistant turn that requested tools carries no text of its own; sending an
+                // empty string there makes strict endpoints reject the history, so the field is
+                // omitted entirely. Every other role keeps its content, empty or not.
+                val toolCallTurn = msg.role == AgentRole.ASSISTANT && msg.toolCalls.isNotEmpty()
+                if (!toolCallTurn || msg.content.isNotBlank()) {
+                    msgObj.put("content", msg.content)
+                }
+
+                // The follow-up "tool" messages must be able to reference those calls,
+                // otherwise providers reject the history.
+                if (toolCallTurn) {
+                    msgObj.put("tool_calls", toolCallsToJson(msg.toolCalls))
+                }
+                if (msg.role == AgentRole.TOOL && msg.toolCallId != null) {
+                    msgObj.put("tool_call_id", msg.toolCallId)
+                }
                 messagesArray.put(msgObj)
             }
 
             jsonBody.put("messages", messagesArray)
+
+            // Phase 6: advertise the tools offered for this request
+            if (request.tools.isNotEmpty()) {
+                jsonBody.put("tools", toolsToJson(request.tools))
+            }
 
             val endpoint = if (baseUrl.endsWith("/chat/completions")) baseUrl else "$baseUrl/chat/completions"
             val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -126,8 +143,11 @@ class OpenAiCompatibleProvider(
             val finishReason = firstChoice.optString("finish_reason").ifEmpty { null }
             val messageObj = firstChoice.optJSONObject("message")
             val content = messageObj?.optString("content")?.trim() ?: ""
+            val toolCalls = parseToolCalls(messageObj)
 
-            if (content.isEmpty()) {
+            // A tool-call reply legitimately has no text content, so only a reply with
+            // neither text nor tool calls counts as the "empty response" failure.
+            if (content.isEmpty() && toolCalls.isEmpty()) {
                 return@withContext Result.failure(IOException("Received empty response content from model"))
             }
 
@@ -149,12 +169,72 @@ class OpenAiCompatibleProvider(
                     usage = usage,
                     model = returnedModel,
                     provider = name,
-                    latencyMs = latencyMs
+                    latencyMs = latencyMs,
+                    toolCalls = toolCalls
                 )
             )
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private fun roleForApi(role: AgentRole): String = when (role) {
+        AgentRole.USER -> "user"
+        AgentRole.ASSISTANT -> "assistant"
+        AgentRole.SYSTEM -> "system"
+        AgentRole.TOOL -> "tool"
+    }
+
+    private fun toolsToJson(tools: List<ToolDefinition>): JSONArray {
+        val array = JSONArray()
+        for (tool in tools) {
+            val parameters = try {
+                JSONObject(tool.parametersJson)
+            } catch (_: Exception) {
+                JSONObject().put("type", "object").put("properties", JSONObject())
+            }
+            val function = JSONObject()
+                .put("name", tool.name)
+                .put("description", tool.description)
+                .put("parameters", parameters)
+            array.put(JSONObject().put("type", "function").put("function", function))
+        }
+        return array
+    }
+
+    private fun toolCallsToJson(toolCalls: List<ToolCall>): JSONArray {
+        val array = JSONArray()
+        for (call in toolCalls) {
+            val function = JSONObject()
+                .put("name", call.name)
+                .put("arguments", call.arguments)
+            array.put(
+                JSONObject()
+                    .put("id", call.id)
+                    .put("type", "function")
+                    .put("function", function)
+            )
+        }
+        return array
+    }
+
+    private fun parseToolCalls(messageObj: JSONObject?): List<ToolCall> {
+        val raw = messageObj?.optJSONArray("tool_calls") ?: return emptyList()
+        val calls = mutableListOf<ToolCall>()
+        for (i in 0 until raw.length()) {
+            val item = raw.optJSONObject(i) ?: continue
+            val function = item.optJSONObject("function") ?: continue
+            val toolName = function.optString("name").trim()
+            if (toolName.isEmpty()) continue
+            calls.add(
+                ToolCall(
+                    id = item.optString("id").ifEmpty { "call_${i}_$toolName" },
+                    name = toolName,
+                    arguments = function.optString("arguments").ifEmpty { "{}" }
+                )
+            )
+        }
+        return calls
     }
 }
 

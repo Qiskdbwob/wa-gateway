@@ -73,6 +73,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.agent.loop.AgentState
+import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentRole
 import com.example.ui.components.EmptyStateCard
@@ -92,9 +93,10 @@ fun ChatScreen(
     val selectedSessionId by viewModel.selectedSessionId.collectAsState()
     val messages by viewModel.selectedSessionMessages.collectAsState()
     val agentState by viewModel.agentState.collectAsState()
+    val agentActivity by viewModel.agentCurrentActivity.collectAsState()
     val isTesting by viewModel.isTestingAgent.collectAsState()
     val chatInput by viewModel.chatInputText.collectAsState()
-    val isBusy = isTesting || agentState == AgentState.THINKING
+    val isBusy = isTesting || agentState.isBusy
 
     val clipboardManager = LocalClipboardManager.current
     val listState = rememberLazyListState()
@@ -304,9 +306,9 @@ fun ChatScreen(
                     }
 
                     // Agent Status / Thinking Indicator Bubble
-                    if (isTesting || agentState == AgentState.THINKING || agentState == AgentState.CALLING_TOOL || agentState == AgentState.WAITING_APPROVAL) {
+                    if (isTesting || agentState.isBusy) {
                         item {
-                            AgentThinkingBubble(agentState = agentState)
+                            AgentThinkingBubble(agentState = agentState, activity = agentActivity)
                         }
                     }
                 }
@@ -469,6 +471,7 @@ fun ChatMessageBubble(
 @Composable
 fun AgentThinkingBubble(
     agentState: AgentState,
+    activity: String? = null,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "thinking_pulse")
@@ -518,17 +521,32 @@ fun AgentThinkingBubble(
                     color = AgentEmerald
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = when (agentState) {
-                        AgentState.CALLING_TOOL -> "Agent sedang menggunakan tool..."
-                        AgentState.WAITING_APPROVAL -> "Menunggu persetujuan..."
-                        AgentState.WAITING_TOOL -> "Menunggu respon tool..."
-                        AgentState.DELEGATING -> "Mendelegasikan ke sub-agent..."
-                        else -> "Agent sedang berpikir..."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column {
+                    Text(
+                        text = when (agentState) {
+                            AgentState.CALLING_TOOL -> "Agent sedang menggunakan tool..."
+                            AgentState.WAITING_APPROVAL -> "Menunggu persetujuan..."
+                            AgentState.WAITING_TOOL -> "Menunggu respon tool..."
+                            AgentState.DELEGATING -> "Mendelegasikan ke sub-agent..."
+                            AgentState.RETRYING -> "Mencoba ulang..."
+                            AgentState.FALLBACK -> "Beralih ke model cadangan..."
+                            else -> "Agent sedang berpikir..."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // Concrete tool activity of the running turn, when there is one.
+                    if (!activity.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = activity,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            maxLines = 2
+                        )
+                    }
+                }
             }
         }
     }

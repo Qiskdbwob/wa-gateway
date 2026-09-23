@@ -5,8 +5,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agent.bridge.WhatsAppAgentBridge
 import com.example.agent.loop.AgentState
+import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentSession
+import com.example.agent.model.Tool
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -54,6 +56,10 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     val agentState: StateFlow<AgentState> = agentBridge.agentLoop.state
     val agentLastError: StateFlow<String?> = agentBridge.agentLoop.lastError
     val agentLogs: StateFlow<List<String>> = agentBridge.agentLoop.activityLogs
+    val agentCurrentActivity: StateFlow<String?> = agentBridge.agentLoop.currentActivity
+
+    /** Phase 6: tools registered on the Agent Loop, shown on the Developer screen. */
+    val agentTools: List<Tool> = agentBridge.toolRegistry.all()
     val agentSystemPrompt = MutableStateFlow(agentBridge.systemPrompt.value)
     val agentBaseUrl = MutableStateFlow(agentBridge.providerConfig.value.baseUrl)
     val agentApiKey = MutableStateFlow(agentBridge.providerConfig.value.apiKey)
@@ -234,7 +240,7 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun sendDirectChatMessage(textToSend: String? = null) {
-        if (_isTestingAgent.value || agentState.value == AgentState.THINKING) return
+        if (_isTestingAgent.value || agentState.value.isBusy) return
         val text = (textToSend ?: chatInputText.value).trim()
         if (text.isEmpty()) return
         chatInputText.value = ""
@@ -265,7 +271,7 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun testAgentLoop() {
-        if (_isTestingAgent.value || agentState.value == AgentState.THINKING) return
+        if (_isTestingAgent.value || agentState.value.isBusy) return
         val prompt = testPromptText.value.trim()
         if (prompt.isEmpty()) return
 

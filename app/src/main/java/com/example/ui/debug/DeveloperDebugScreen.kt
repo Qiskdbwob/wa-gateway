@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Storage
@@ -53,6 +54,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.agent.model.ToolPermission
 import com.example.ui.components.AgentStatusBadge
 import com.example.ui.components.SectionHeader
 import com.example.ui.theme.AgentEmerald
@@ -70,6 +72,7 @@ fun DeveloperDebugScreen(
     val testResponse by viewModel.testResponseText.collectAsState()
     val isTesting by viewModel.isTestingAgent.collectAsState()
     val agentLogs by viewModel.agentLogs.collectAsState()
+    val agentTools = viewModel.agentTools
     val modelId by viewModel.agentModelId.collectAsState()
     val baseUrl by viewModel.agentBaseUrl.collectAsState()
     val useEchoFallback by viewModel.useEchoFallback.collectAsState()
@@ -289,7 +292,69 @@ fun DeveloperDebugScreen(
                 }
             }
 
-            // 3. Raw Agent Activity Logs
+            // 3. Tool Registry (Phase 6)
+            SectionHeader(title = "Tool Registry", icon = Icons.Default.Build)
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = CardDefaults.outlinedCardBorder().copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                    )
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (agentTools.isEmpty()) {
+                        Text(
+                            text = "Belum ada tool terdaftar. Tool hanya dipakai bila agent toolsEnabled aktif.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "${agentTools.size} tool terdaftar dan ditawarkan ke model:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        agentTools.forEach { tool ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = tool.name,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = tool.description,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = if (tool.permission == ToolPermission.SAFE) "SAFE" else "CONFIRM",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (tool.permission == ToolPermission.SAFE) AgentEmerald else Color(0xFFF59E0B)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Raw Agent Activity Logs
             SectionHeader(title = "Log Aktivitas Agent Loop", icon = Icons.Default.BugReport)
 
             Card(

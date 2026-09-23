@@ -18,6 +18,7 @@ import com.example.agent.storage.RoomAgentSessionRepository
 import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
+import com.example.agent.tool.ToolRegistry
 import com.example.wagateway.OutgoingMessageSender
 import com.example.wagateway.WaGatewayManager
 import kotlinx.coroutines.CoroutineScope
@@ -115,6 +116,12 @@ class WhatsAppAgentBridge private constructor(
         )
     )
 
+    /**
+     * Phase 6 — tools the Agent Loop may call. Registering a tool here is the only step
+     * needed to make it available to the model; the loop itself never references one.
+     */
+    val toolRegistry: ToolRegistry = ToolRegistry.withBuiltIns()
+
     val agentLoop = AgentLoop(
         agent = Agent(
             systemPrompt = systemPrompt.value,
@@ -122,7 +129,8 @@ class WhatsAppAgentBridge private constructor(
         ),
         modelProvider = openAiProvider,
         sessionRepository = sessionRepository,
-        modelRouter = modelRouter
+        modelRouter = modelRouter,
+        toolRegistry = toolRegistry
     )
 
     private val _isAutoReplyEnabled = MutableStateFlow(false)
