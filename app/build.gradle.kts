@@ -17,6 +17,15 @@ android {
     versionName = "1.0.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    ndk {
+      // The Go/whatsmeow gateway (libgojni.so) is only bound for these ABIs — see the
+      // `gomobile bind -target=android/arm64,android/amd64` step in
+      // .github/workflows/build.yml. Declaring them here stops Play/devices from
+      // installing the app on an ABI that has no libgojni.so, which would otherwise
+      // fail at startup with UnsatisfiedLinkError.
+      abiFilters += listOf("arm64-v8a", "x86_64")
+    }
   }
 
   signingConfigs {
