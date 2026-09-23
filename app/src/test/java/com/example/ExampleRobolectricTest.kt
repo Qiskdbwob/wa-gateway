@@ -12,7 +12,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+// Robolectric 4.16.x does not ship an android-all jar for API 36, so the sandbox
+// SDK is pinned to a supported level (see src/test/resources/robolectric.properties).
+@Config(sdk = [34])
 class ExampleRobolectricTest {
 
   @Test
