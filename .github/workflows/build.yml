@@ -111,6 +111,24 @@ jobs:
       - name: Unit tests
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
+      # Gradle only prints failing tests, so summarise the XML reports to make the
+      # evidence visible in the log: which test classes ran and how many passed.
+      - name: Unit test summary
+        if: always()
+        run: |
+          REPORTS=app/build/test-results/testDebugUnitTest
+          if ! ls "$REPORTS"/*.xml >/dev/null 2>&1; then
+            echo "No test result XML found in $REPORTS"
+            exit 0
+          fi
+          echo "=== Test classes ==="
+          for f in "$REPORTS"/*.xml; do
+            grep -o 'name="[^"]*"' "$f" | head -1
+          done
+          echo "=== Totals ==="
+          grep -h -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' "$REPORTS"/*.xml |
+            awk -F'"' '{t+=$2; s+=$4; f+=$6; e+=$8} END {printf "tests=%d skipped=%d failures=%d errors=%d\n", t, s, f, e}'
+
       - name: Assemble debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
