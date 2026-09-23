@@ -27,6 +27,10 @@ type Client struct {
 	listener  WaEventListener
 	qrCancel  context.CancelFunc
 	mu        sync.Mutex
+
+	// kept so the client can be rebuilt on a clean device after a session reset
+	dbPath string
+	logger waLog.Logger
 }
 
 // NewClient initializes a new WhatsApp Gateway client with local SQLite session storage.
@@ -43,6 +47,8 @@ func NewClient(dbPath string, listener WaEventListener) (*Client, error) {
 		container: container,
 		db:        db,
 		listener:  listener,
+		dbPath:    dbPath,
+		logger:    logger,
 	}
 
 	cli.AddEventHandler(func(rawEvt interface{}) {
@@ -87,15 +93,28 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 		// while Info.Chat is the conversation that must be used when replying.
 		sender := evt.Info.Sender.ToNonAD().String()
 		chat := evt.Info.Chat.ToNonAD().String()
-		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, evt.Info.Timestamp.Unix())
+		// Info.ID is forwarded so Kotlin can mark the message as read (centang biru)
+		// and, later on, edit it once the agent has produced a reply.
+		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, string(evt.Info.ID), evt.Info.Timestamp.Unix())
 	}
 }
 
-// Connect establishes the connection to WhatsApp. If not logged in, it initiates the QR channel.
+// Connect establishes the connection to WhatsApp. If a linked session exists in the
+// local store it is resumed, otherwise the QR pairing channel is started.
+//
+// It uses Store.ID (not IsLoggedIn) to decide which path to take: in this version of
+// whatsmeow IsLoggedIn() is a runtime flag that only becomes true once the socket has
+// authenticated, so right after a process restart it is still false even though a
+// session is stored. Requesting GetQRChannel with a stored user ID fails with
+// ErrQRStoreContainsID ("GetQRChannel can only be called when there's no user ID in
+// the client's Store"), which is what broke session persistence before.
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.connectLocked()
+}
 
+func (c *Client) connectLocked() error {
 	if c.cli == nil {
 		return errors.New("client not initialized")
 	}
@@ -107,9 +126,11 @@ func (c *Client) Connect() error {
 		return nil
 	}
 
-	if c.cli.IsLoggedIn() {
+	// A stored user ID means this device is already linked to a WhatsApp account:
+	// resume it instead of asking for a new QR code.
+	if c.cli.Store.ID != nil {
 		if c.listener != nil {
-			c.listener.OnConnectionStatus("Connecting")
+			c.listener.OnConnectionStatus("Menyambungkan ulang sesi tersimpan...")
 		}
 		err := c.cli.Connect()
 		if err != nil {
@@ -121,7 +142,7 @@ func (c *Client) Connect() error {
 		return nil
 	}
 
-	// Not logged in: listen for QR code
+	// No stored session: listen for QR code
 	if c.listener != nil {
 		c.listener.OnConnectionStatus("Waiting for QR")
 	}
@@ -187,8 +208,11 @@ func (c *Client) PairPhone(phone string) (string, error) {
 		return "", errors.New("client not initialized")
 	}
 
-	if c.cli.IsLoggedIn() {
-		return "", errors.New("already logged in")
+	// Store.ID is the reliable "device is linked" check (see Connect). Re-pairing an
+	// already linked device is rejected by WhatsApp itself, so fail early with a
+	// message the UI can act on instead of surfacing ErrQRStoreContainsID.
+	if c.cli.Store.ID != nil {
+		return "", errors.New("sesi sudah tertaut; pakai Hubungkan, atau putuskan sesi dulu untuk menautkan ulang")
 	}
 
 	// Clean phone number (strip '+', spaces, dashes)
@@ -305,12 +329,26 @@ func (c *Client) Disconnect() {
 	}
 }
 
-// IsLoggedIn checks whether a valid WhatsApp session exists.
+// IsLoggedIn reports whether this client is currently authenticated with WhatsApp.
+//
+// Note that whatsmeow keeps this as a runtime flag: it is false right after the
+// process starts, before Connect() has completed. Use HasSession() to ask whether a
+// linked session is stored on disk.
 func (c *Client) IsLoggedIn() bool {
 	if c.cli == nil {
 		return false
 	}
 	return c.cli.IsLoggedIn()
+}
+
+// HasSession reports whether a linked WhatsApp session is stored locally, i.e. the
+// device does not need to be paired again. This stays true across app restarts, so it
+// is what the UI should use to show "sesi tersimpan" and to enable auto-reconnect.
+func (c *Client) HasSession() bool {
+	if c.cli == nil {
+		return false
+	}
+	return c.cli.Store.ID != nil
 }
 
 // IsConnected checks whether the client is currently connected.
@@ -321,49 +359,161 @@ func (c *Client) IsConnected() bool {
 	return c.cli.IsConnected()
 }
 
-// SendText sends a plain text message to the specified recipient phone number or JID.
-func (c *Client) SendText(target string, text string) error {
-	if c.cli == nil || !c.cli.IsConnected() {
-		return errors.New("client is not connected")
-	}
+// resolveRecipient accepts either a full JID ("62812...@s.whatsapp.net") or a bare
+// phone number and returns the JID to send to.
+func resolveRecipient(target string) (types.JID, error) {
 	if strings.TrimSpace(target) == "" {
-		return errors.New("target recipient cannot be empty")
-	}
-	if strings.TrimSpace(text) == "" {
-		return errors.New("message text cannot be empty")
+		return types.EmptyJID, errors.New("target recipient cannot be empty")
 	}
 
-	var recipient types.JID
 	if strings.Contains(target, "@") {
-		var err error
-		recipient, err = types.ParseJID(target)
+		jid, err := types.ParseJID(target)
 		if err != nil {
-			return fmt.Errorf("invalid JID: %w", err)
+			return types.EmptyJID, fmt.Errorf("invalid JID: %w", err)
 		}
-	} else {
-		// Clean phone number (strip '+', spaces, dashes)
-		var sb strings.Builder
-		for _, r := range target {
-			if unicode.IsDigit(r) {
-				sb.WriteRune(r)
-			}
+		return jid, nil
+	}
+
+	// Clean phone number (strip '+', spaces, dashes)
+	var sb strings.Builder
+	for _, r := range target {
+		if unicode.IsDigit(r) {
+			sb.WriteRune(r)
 		}
-		cleaned := sb.String()
-		if cleaned == "" {
-			return errors.New("invalid phone number")
-		}
-		recipient = types.NewJID(cleaned, types.DefaultUserServer)
+	}
+	cleaned := sb.String()
+	if cleaned == "" {
+		return types.EmptyJID, errors.New("invalid phone number")
+	}
+	return types.NewJID(cleaned, types.DefaultUserServer), nil
+}
+
+// parseJIDOrEmpty parses an optional JID, returning types.EmptyJID when it is blank or
+// malformed. MarkRead accepts an empty sender for direct chats.
+func parseJIDOrEmpty(raw string) types.JID {
+	if strings.TrimSpace(raw) == "" {
+		return types.EmptyJID
+	}
+	jid, err := types.ParseJID(raw)
+	if err != nil {
+		return types.EmptyJID
+	}
+	return jid
+}
+
+// SendText sends a plain text message and returns the WhatsApp message ID
+// (SendResponse.ID). The ID is what MarkRead and EditText operate on.
+func (c *Client) SendText(target string, text string) (string, error) {
+	cli := c.cli
+	if cli == nil || !cli.IsConnected() {
+		return "", errors.New("client is not connected")
+	}
+
+	if strings.TrimSpace(text) == "" {
+		return "", errors.New("message text cannot be empty")
+	}
+
+	recipient, err := resolveRecipient(target)
+	if err != nil {
+		return "", err
 	}
 
 	msg := &waE2E.Message{
 		Conversation: proto.String(text),
 	}
 
-	_, err := c.cli.SendMessage(context.Background(), recipient, msg)
+	resp, err := cli.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
+		return "", fmt.Errorf("failed to send message: %w", err)
 	}
 
+	return string(resp.ID), nil
+}
+
+// EditText replaces the content of a message we already sent (used for the
+// "sedang berpikir..." placeholder that turns into the final answer).
+//
+// WhatsApp only allows edits for a limited window (whatsmeow exposes it as
+// whatsmeow.EditWindow, 20 minutes), so callers must fall back to sending a new
+// message when this returns an error.
+func (c *Client) EditText(target string, messageID string, text string) error {
+	cli := c.cli
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client is not connected")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return errors.New("message ID cannot be empty")
+	}
+	if strings.TrimSpace(text) == "" {
+		return errors.New("message text cannot be empty")
+	}
+
+	recipient, err := resolveRecipient(target)
+	if err != nil {
+		return err
+	}
+
+	edit := cli.BuildEdit(recipient, types.MessageID(messageID), &waE2E.Message{
+		Conversation: proto.String(text),
+	})
+	if _, err := cli.SendMessage(context.Background(), recipient, edit); err != nil {
+		return fmt.Errorf("failed to edit message: %w", err)
+	}
+	return nil
+}
+
+// MarkRead sends a read receipt (centang biru) for a single incoming message.
+//
+// chat must be the conversation JID and sender the author; for direct chats both are
+// the same user JID. An empty or invalid sender is tolerated.
+func (c *Client) MarkRead(chat string, sender string, messageID string) error {
+	cli := c.cli
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client is not connected")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return errors.New("message ID cannot be empty")
+	}
+
+	chatJID := parseJIDOrEmpty(chat)
+	if chatJID.IsEmpty() {
+		return fmt.Errorf("invalid chat JID: %q", chat)
+	}
+
+	err := cli.MarkRead(
+		context.Background(),
+		[]types.MessageID{types.MessageID(messageID)},
+		time.Now(),
+		chatJID,
+		parseJIDOrEmpty(sender),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark message as read: %w", err)
+	}
+	return nil
+}
+
+// SetTyping shows or clears the "typing..." indicator in a chat. WhatsApp expires the
+// state on its own, so long running work must re-send composing periodically.
+func (c *Client) SetTyping(chat string, typing bool) error {
+	cli := c.cli
+	if cli == nil || !cli.IsConnected() {
+		return errors.New("client is not connected")
+	}
+
+	chatJID := parseJIDOrEmpty(chat)
+	if chatJID.IsEmpty() {
+		return fmt.Errorf("invalid chat JID: %q", chat)
+	}
+
+	state := types.ChatPresencePaused
+	if typing {
+		state = types.ChatPresenceComposing
+	}
+
+	if err := cli.SendChatPresence(context.Background(), chatJID, state, types.ChatPresenceMediaText); err != nil {
+		return fmt.Errorf("failed to update typing state: %w", err)
+	}
 	return nil
 }
 
@@ -377,19 +527,91 @@ func (c *Client) Logout() error {
 		c.qrCancel = nil
 	}
 
+	if c.cli == nil {
+		return nil
+	}
+
+	err := c.cli.Logout(context.Background())
+	if c.listener != nil {
+		c.listener.OnConnectionStatus("Logged out")
+	}
+
+	// Logout deletes the device from the store, which makes the current whatsmeow
+	// client unusable (its session stores are replaced with a NoopStore). Rebuild it
+	// on a clean device so pairing can start again without restarting the app.
+	if rebuildErr := c.rebuildLocked(); rebuildErr != nil && err == nil {
+		err = rebuildErr
+	}
+	return err
+}
+
+// ResetSession unlinks the stored session without needing to be connected. Used by the
+// "putuskan sesi" action so a device can be paired again from scratch.
+func (c *Client) ResetSession() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.qrCancel != nil {
+		c.qrCancel()
+		c.qrCancel = nil
+	}
+	if c.cli == nil {
+		return errors.New("client not initialized")
+	}
+
+	ctx := context.Background()
+	var err error
+	if c.cli.IsConnected() {
+		// Ask WhatsApp to remove this companion device and wipe the local store.
+		err = c.cli.Logout(ctx)
+	} else {
+		// Offline: drop the local device record so the next Connect() uses QR.
+		err = c.cli.Store.Delete(ctx)
+	}
+
+	if rebuildErr := c.rebuildLocked(); rebuildErr != nil && err == nil {
+		err = rebuildErr
+	}
+
+	if c.listener != nil {
+		c.listener.OnConnectionStatus("Logged out")
+	}
+	return err
+}
+
+// rebuildLocked opens a fresh device (and whatsmeow client) inside the same SQLite
+// database. Callers must hold c.mu.
+func (c *Client) rebuildLocked() error {
 	if c.cli != nil {
-		err := c.cli.Logout(context.Background())
-		if c.listener != nil {
-			c.listener.OnConnectionStatus("Logged out")
-		}
+		c.cli.Disconnect()
+	}
+	if c.container != nil {
+		_ = c.container.Close()
+	}
+	if c.db != nil {
+		_ = c.db.Close()
+	}
+
+	db, container, device, err := initStore(c.dbPath, c.logger)
+	if err != nil {
 		return err
 	}
+
+	cli := whatsmeow.NewClient(device, c.logger)
+	cli.AddEventHandler(func(rawEvt interface{}) {
+		c.handleEvent(rawEvt)
+	})
+
+	c.db = db
+	c.container = container
+	c.cli = cli
 	return nil
 }
 
 // Close closes the underlying SQLite database connection.
 func (c *Client) Close() {
 	c.Disconnect()
+
 	if c.container != nil {
 		_ = c.container.Close()
 	}

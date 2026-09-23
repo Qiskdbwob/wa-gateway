@@ -16,8 +16,22 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
-class WaGatewayManager private constructor(context: Context) : WaEventListener {
+/**
+ * The subset of the gateway used to push text back to WhatsApp. It exists as an
+ * interface so the channel adapter (edit-the-placeholder logic) can be unit tested
+ * without the native gateway.
+ */
+interface OutgoingMessageSender {
+    /** Sends a message and returns its WhatsApp message ID. */
+    suspend fun sendText(target: String, text: String): Result<String>
+
+    /** Replaces the content of a message we already sent. */
+    suspend fun editText(target: String, messageId: String, text: String): Result<Unit>
+}
+
+class WaGatewayManager private constructor(context: Context) : WaEventListener, OutgoingMessageSender {
 
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -34,6 +48,11 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
     private val _pairingCode = MutableStateFlow<String?>(null)
     val pairingCode: StateFlow<String?> = _pairingCode.asStateFlow()
 
+    /**
+     * True when a linked WhatsApp session is stored on this device. This survives app
+     * restarts (it is read from the SQLite session store), so it is what the UI uses to
+     * decide between "hubungkan ulang" and "tautkan perangkat".
+     */
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
@@ -70,11 +89,16 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
             // App-specific internal storage for SQLite session database
             val dbFile = File(appContext.filesDir, "wagateway.db")
             addLog("Initializing WhatsApp Gateway with DB: ${dbFile.name}")
-            
+
             client = Wagateway.newClient(dbFile.absolutePath, this)
-            val loggedIn = client?.isLoggedIn() ?: false
-            _isLoggedIn.value = loggedIn
-            addLog("Client initialized. Has previous session: $loggedIn")
+            refreshState()
+
+            if (_isLoggedIn.value) {
+                addLog("Sesi WhatsApp tersimpan ditemukan — menyambung ulang otomatis (tanpa QR).")
+                connect()
+            } else {
+                addLog("Belum ada sesi tersimpan — perlu tautkan perangkat (QR / kode pairing).")
+            }
         } catch (e: Throwable) {
             // Throwable, not Exception: a missing/incompatible native library raises
             // UnsatisfiedLinkError, and the app must degrade to an error state instead
@@ -84,23 +108,27 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
         }
     }
 
-    fun connect() {
+    /** Re-reads session/connection state from the native client. */
+    private fun refreshState() {
+        val c = client ?: return
+        _isLoggedIn.value = c.hasSession() || c.isLoggedIn
+        _isConnected.value = c.isConnected
+    }
+
+    fun connect(reason: String = "manual") {
         scope.launch(Dispatchers.IO) {
             try {
                 if (client == null) {
                     initClient()
                 }
-                addLog("Connecting to WhatsApp...")
+                addLog("Connecting to WhatsApp ($reason)...")
                 _connectionStatus.value = "Connecting..."
                 client?.connect()
-                val loggedIn = client?.isLoggedIn() ?: false
-                val connected = client?.isConnected() ?: false
-                _isLoggedIn.value = loggedIn
-                _isConnected.value = connected
-        } catch (e: Throwable) {
-            addLog("Connection failed: ${e.message}")
-            _connectionStatus.value = "Connection Error: ${e.message}"
-        }
+                refreshState()
+            } catch (e: Throwable) {
+                addLog("Connection failed: ${e.message}")
+                _connectionStatus.value = "Connection Error: ${e.message}"
+            }
         }
     }
 
@@ -113,9 +141,9 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 _connectionStatus.value = "Disconnected"
                 _qrCode.value = null
                 _pairingCode.value = null
-        } catch (e: Throwable) {
-            addLog("Disconnect error: ${e.message}")
-        }
+            } catch (e: Throwable) {
+                addLog("Disconnect error: ${e.message}")
+            }
         }
     }
 
@@ -138,26 +166,94 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
         }
     }
 
-    suspend fun sendText(target: String, text: String): Result<Unit> = withContext(Dispatchers.IO) {
+    /**
+     * Sends a text message. Returns the WhatsApp message ID, which can later be passed
+     * to [editText] (used for the "sedang berpikir" placeholder).
+     */
+    override suspend fun sendText(target: String, text: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
             if (!c.isConnected) {
                 return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
             }
-            c.sendText(target, text)
-            addLog("Message sent to $target (length=${text.length})")
+            val messageId = c.sendText(target, text)
+            addLog("Message sent to $target (length=${text.length}, id=$messageId)")
 
             val outgoing = WaMessage(
+                id = messageId.ifBlank { UUID.randomUUID().toString() },
                 sender = "Me (Gateway)",
                 text = text,
                 timestamp = System.currentTimeMillis() / 1000,
                 isOutgoing = true
             )
             _messages.value = listOf(outgoing) + _messages.value
-            Result.success(Unit)
+            Result.success(messageId)
         } catch (e: Throwable) {
             addLog("Failed to send message: ${e.message}")
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Replaces the content of a message this device already sent. WhatsApp only allows
+     * this for a limited time window after sending, so callers must treat a failure as
+     * "fall back to sending a new message".
+     */
+    override suspend fun editText(target: String, messageId: String, text: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+                c.editText(target, messageId, text)
+                Result.success(Unit)
+            } catch (e: Throwable) {
+                addLog("Failed to edit message $messageId: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    /** Sends a read receipt (centang biru) for an incoming message. */
+    suspend fun markRead(chat: String, sender: String, messageId: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+                if (!c.isConnected) {
+                    return@withContext Result.failure(IllegalStateException("Gateway is not connected"))
+                }
+                c.markRead(chat, sender, messageId)
+                Result.success(Unit)
+            } catch (e: Throwable) {
+                Result.failure(e)
+            }
+        }
+
+    /** Shows or clears the "typing..." indicator in a chat. Best effort. */
+    fun setTyping(chat: String, typing: Boolean) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val c = client ?: return@launch
+                if (!c.isConnected) return@launch
+                c.setTyping(chat, typing)
+            } catch (e: Throwable) {
+                addLog("Typing indicator error: ${e.message}")
+            }
+        }
+    }
+
+    /** Unlinks the WhatsApp session so a device can be paired again from scratch. */
+    fun resetSession() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                addLog("Unlinking stored WhatsApp session...")
+                client?.resetSession()
+                _isLoggedIn.value = false
+                _isConnected.value = false
+                _qrCode.value = null
+                _pairingCode.value = null
+                _connectionStatus.value = "Logged out"
+                addLog("Sesi dihapus. Tautkan ulang dengan QR atau kode pairing.")
+            } catch (e: Throwable) {
+                addLog("Reset session error: ${e.message}")
+            }
         }
     }
 
@@ -171,9 +267,9 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
                 _qrCode.value = null
                 _pairingCode.value = null
                 _connectionStatus.value = "Logged out"
-        } catch (e: Throwable) {
-            addLog("Logout error: ${e.message}")
-        }
+            } catch (e: Throwable) {
+                addLog("Logout error: ${e.message}")
+            }
         }
     }
 
@@ -202,10 +298,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
     override fun onConnectionStatus(status: String) {
         scope.launch {
             _connectionStatus.value = status
-            val loggedIn = client?.isLoggedIn() ?: false
-            val connected = client?.isConnected() ?: false
-            _isLoggedIn.value = loggedIn
-            _isConnected.value = connected
+            refreshState()
             if (status == "Connected") {
                 _qrCode.value = null
                 _pairingCode.value = null
@@ -214,9 +307,17 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
         }
     }
 
-    override fun onMessage(sender: String, chat: String, isGroup: Boolean, text: String, timestamp: Long) {
+    override fun onMessage(
+        sender: String,
+        chat: String,
+        isGroup: Boolean,
+        text: String,
+        messageId: String,
+        timestamp: Long
+    ) {
         scope.launch {
             val msg = WaMessage(
+                id = messageId.ifBlank { UUID.randomUUID().toString() },
                 sender = sender,
                 text = text,
                 timestamp = timestamp,
@@ -225,9 +326,16 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
             _messages.value = listOf(msg) + _messages.value
             addLog("Received message from $sender${if (isGroup) " in group $chat" else ""}")
 
+            // Mark as read in parallel: WhatsApp only shows blue ticks once the receipt
+            // has been acknowledged by the server.
+            if (messageId.isNotBlank()) {
+                markRead(chat.ifBlank { sender }, sender, messageId)
+                    .onFailure { addLog("Read receipt failed for $messageId: ${it.message}") }
+            }
+
             for (listener in messageListeners) {
                 try {
-                    listener(sender, chat, isGroup, text, timestamp)
+                    listener(sender, chat, isGroup, text, messageId, timestamp)
                 } catch (e: Throwable) {
                     addLog("Error in message listener: ${e.message}")
                 }
@@ -254,6 +362,14 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener {
  * @param chat   the conversation JID, use it as the reply target
  * @param isGroup true when the message came from a group conversation
  * @param text   plain text content
+ * @param messageId WhatsApp message ID, used for read receipts and message edits
  * @param timestamp unix timestamp in seconds
  */
-typealias IncomingMessageListener = (sender: String, chat: String, isGroup: Boolean, text: String, timestamp: Long) -> Unit
+typealias IncomingMessageListener = (
+    sender: String,
+    chat: String,
+    isGroup: Boolean,
+    text: String,
+    messageId: String,
+    timestamp: Long
+) -> Unit

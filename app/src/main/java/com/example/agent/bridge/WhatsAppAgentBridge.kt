@@ -18,17 +18,28 @@ import com.example.agent.storage.RoomAgentSessionRepository
 import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
+import com.example.wagateway.OutgoingMessageSender
 import com.example.wagateway.WaGatewayManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** Metadata key holding the WhatsApp message ID that should be edited with the answer. */
+const val EDIT_TARGET_KEY = "whatsappEditTarget"
+
+private const val THINKING_PLACEHOLDER = "⏳ Sedang berpikir..."
+
+/** WhatsApp drops the typing state after a few seconds, so refresh it while working. */
+private const val TYPING_REFRESH_MS = 8_000L
+
 class WhatsAppChannelAdapter(
-    private val gatewayManager: WaGatewayManager
+    private val gatewayManager: OutgoingMessageSender
 ) : AgentChannelAdapter {
     override val channelName: String = "whatsapp"
 
@@ -36,7 +47,19 @@ class WhatsAppChannelAdapter(
         if (response.content.isBlank()) {
             return Result.failure(IllegalArgumentException("Cannot send empty response to WhatsApp"))
         }
-        return gatewayManager.sendText(input.conversationId, response.content)
+
+        // Turn the "sedang berpikir..." placeholder into the real answer when possible, so
+        // the chat keeps one bubble instead of two. Edits can fail (WhatsApp only accepts
+        // them for a limited window), in which case we fall back to a normal send.
+        val editTarget = input.metadata[EDIT_TARGET_KEY]
+        if (!editTarget.isNullOrBlank()) {
+            val edited = gatewayManager.editText(input.conversationId, editTarget, response.content)
+            if (edited.isSuccess) {
+                return Result.success(Unit)
+            }
+        }
+
+        return gatewayManager.sendText(input.conversationId, response.content).map { }
     }
 }
 
@@ -139,8 +162,8 @@ class WhatsAppAgentBridge private constructor(
         }
 
         // Register listener to gateway incoming messages
-        gatewayManager.addMessageListener { sender, chat, isGroup, text, timestamp ->
-            handleIncomingMessage(sender, chat, isGroup, text, timestamp)
+        gatewayManager.addMessageListener { sender, chat, isGroup, text, messageId, timestamp ->
+            handleIncomingMessage(sender, chat, isGroup, text, messageId, timestamp)
         }
     }
 
@@ -230,6 +253,7 @@ class WhatsAppAgentBridge private constructor(
         chat: String,
         isGroup: Boolean,
         text: String,
+        messageId: String,
         timestamp: Long
     ) {
         if (!_isAutoReplyEnabled.value) return
@@ -245,21 +269,58 @@ class WhatsAppAgentBridge private constructor(
             return
         }
 
+        // Reply target must be the conversation JID, not the (possibly device specific)
+        // sender JID, so the answer lands in the right chat.
+        val conversationId = chat.ifBlank { sender }
+
         scope.launch {
             updateModelRouter()
 
-            val input = AgentInput(
-                // Reply target must be the conversation JID, not the (possibly device
-                // specific) sender JID, so the answer lands in the right chat.
-                conversationId = chat.ifBlank { sender },
+            var input = AgentInput(
+                conversationId = conversationId,
                 senderId = sender,
                 content = text,
                 timestamp = if (timestamp > 0) timestamp * 1000L else System.currentTimeMillis(),
                 channel = "whatsapp",
-                metadata = mapOf("source" to "whatsmeow")
+                metadata = mapOf("source" to "whatsmeow", "waMessageId" to messageId)
             )
 
-            agentLoop.processInput(input)
+            // Send an instant acknowledgement so the user is never left staring at a
+            // silent chat while a reasoning model (or a fallback chain) works.
+            val ackId = gatewayManager.sendText(conversationId, THINKING_PLACEHOLDER).getOrNull()
+            if (!ackId.isNullOrBlank()) {
+                input = input.copy(metadata = input.metadata + mapOf(EDIT_TARGET_KEY to ackId))
+            }
+
+            // Typing indicator is refreshed while the loop works and cleared afterwards.
+            gatewayManager.setTyping(conversationId, true)
+            val typingKeepAlive = scope.launch {
+                while (isActive) {
+                    delay(TYPING_REFRESH_MS)
+                    gatewayManager.setTyping(conversationId, true)
+                }
+            }
+
+            try {
+                val result = agentLoop.processInput(input) { progress ->
+                    // Only edit a bubble that actually exists, and never let a failed edit
+                    // of a progress note break the reply itself.
+                    if (!ackId.isNullOrBlank()) {
+                        scope.launch { gatewayManager.editText(conversationId, ackId, progress) }
+                    }
+                }
+                if (result.isFailure && !ackId.isNullOrBlank()) {
+                    // Do not leave the placeholder hanging when the agent could not answer.
+                    gatewayManager.editText(
+                        conversationId,
+                        ackId,
+                        "⚠️ ${result.exceptionOrNull()?.message ?: "Agent tidak dapat memproses pesan ini."}"
+                    )
+                }
+            } finally {
+                typingKeepAlive.cancel()
+                gatewayManager.setTyping(conversationId, false)
+            }
         }
     }
 

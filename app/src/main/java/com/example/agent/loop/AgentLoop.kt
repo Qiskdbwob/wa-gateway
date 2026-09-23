@@ -81,6 +81,8 @@ class AgentLoop(
     // Registered adapters for output dispatching (e.g. WhatsApp, etc.)
     private val channelAdapters = ConcurrentHashMap<String, AgentChannelAdapter>()
 
+
+
     fun registerChannelAdapter(adapter: AgentChannelAdapter) {
         channelAdapters[adapter.channelName] = adapter
     }
@@ -117,8 +119,16 @@ class AgentLoop(
      * Persist Response (Assistant Message in Session)
      *       ↓
      * Send Response (via Channel Adapter)
+     *
+     * @param onProgress optional callback used to surface long running work (retries,
+     *   fallbacks and, later on, tool calls) to the user. It is scoped to this single
+     *   call — never global state — so concurrent chats cannot cross-talk. For WhatsApp
+     *   the bridge uses it to update the "sedang berpikir..." bubble.
      */
-    suspend fun processInput(input: AgentInput): Result<AgentResponse> {
+    suspend fun processInput(
+        input: AgentInput,
+        onProgress: ((String) -> Unit)? = null
+    ): Result<AgentResponse> {
         if (!agent.enabled) {
             log("MESSAGE_RECEIVED", "Ignored message for conv='${input.conversationId}' because agent is disabled.")
             return Result.failure(IllegalStateException("Agent is currently disabled"))
@@ -134,6 +144,15 @@ class AgentLoop(
         return mutex.withLock {
             _state.value = AgentState.THINKING
             _lastError.value = null
+
+            // Scoped to this call so concurrent conversations never share a sink.
+            val emitProgress: (String) -> Unit = { message ->
+                try {
+                    onProgress?.invoke(message)
+                } catch (e: Exception) {
+                    log("PROGRESS_ERROR", "Failed to emit progress update: ${e.message}")
+                }
+            }
 
             log(
                 "MESSAGE_RECEIVED",
@@ -195,6 +214,7 @@ class AgentLoop(
                         _state.value = AgentState.FALLBACK
                         val prevTarget = configuredTargets[targetIndex - 1]
                         log("FALLBACK_STARTED", "Target '${prevTarget.id}' failed. Switching to fallback target '${target.id}' (${target.provider.name})")
+                        emitProgress("⇄ Model utama tidak merespons, beralih ke model cadangan (${target.modelId ?: agent.modelId})...")
                         log("FALLBACK_MODEL_SELECTED", "target=${target.id}, provider=${target.provider.name}, model=${target.modelId ?: agent.modelId}, priority=${target.priority}")
                     }
 
@@ -209,6 +229,7 @@ class AgentLoop(
                                 "RETRY_STARTED",
                                 "attempt=$modelAttempt/${effectiveRetryPolicy.maxAttemptsPerModel}, target=${target.id}, provider=${target.provider.name}, model=${target.modelId ?: agent.modelId}"
                             )
+                            emitProgress("↻ Mencoba ulang (${modelAttempt}/${effectiveRetryPolicy.maxAttemptsPerModel})...")
                         }
 
                         val requestModel = target.modelId?.ifBlank { null } ?: agent.modelId
@@ -245,6 +266,7 @@ class AgentLoop(
                                     _state.value = AgentState.RETRYING
                                     val backoff = effectiveRetryPolicy.initialBackoffMs * modelAttempt
                                     log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms, reason=EMPTY_RESPONSE")
+                                    emitProgress("↻ Jawaban kosong, mencoba ulang...")
                                     delay(backoff)
                                     continue // retry on same model
                                 } else {
@@ -302,6 +324,7 @@ class AgentLoop(
                                 _state.value = AgentState.RETRYING
                                 val backoff = classification.retryAfterMs ?: (effectiveRetryPolicy.initialBackoffMs * modelAttempt)
                                 log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms")
+                                emitProgress("↻ Terjadi kendala (${classification.kind.name.lowercase()}), mencoba ulang...")
                                 delay(backoff)
                                 continue // retry on same model
                             } else {

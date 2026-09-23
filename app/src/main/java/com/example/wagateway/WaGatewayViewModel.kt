@@ -120,6 +120,11 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
         gatewayManager.logout()
     }
 
+    /** Unlinks the stored session so the device can be paired again from scratch. */
+    fun resetSession() {
+        gatewayManager.resetSession()
+    }
+
     fun sendTextMessage() {
         val target = targetPhone.value.trim()
         val text = messageText.value.trim()

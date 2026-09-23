@@ -118,7 +118,9 @@ jadi `gradle-wrapper.jar` tidak perlu di-commit.
 ## Cara pakai
 
 1. Buka aplikasi → **Pengaturan → WhatsApp Gateway**.
-2. Pilih **QR** atau **Pairing Code**, lalu hubungkan akun WhatsApp Anda.
+2. Pilih **QR** atau **Pairing Code**, lalu hubungkan akun WhatsApp Anda. Setelah tertaut, aplikasi
+   akan **menyambung ulang otomatis** setiap dibuka — tidak perlu scan QR lagi. Pakai tombol
+   **Putuskan Sesi** hanya bila ingin menautkan perangkat/akun lain dari awal.
 3. Isi **Base URL**, **API Key**, **Model ID**, dan **System Prompt** di Pengaturan.
 4. Aktifkan **Auto-Reply Pesan WhatsApp** di Beranda, atau ngobrol langsung di tab **Chat**.
 5. Cek status di Beranda, riwayat di tab **Tugas** & **Memori**.
@@ -158,13 +160,51 @@ aktif, agent tetap membalas secara lokal tanpa jaringan.
 
 ---
 
+## Catatan perubahan
+
+### Sesi WhatsApp tidak lagi hilang setelah aplikasi ditutup
+
+Sebelumnya, setelah aplikasi dipaksa berhenti, gateway **tidak** menyambung ulang dan hanya
+menampilkan pesan ini:
+
+```
+Connection Error: failed to get QR channel: GetQRChannel can only be called when there's no user ID in the client's Store
+```
+
+Penyebabnya: pada versi `whatsmeow` yang dipin, `Client.IsLoggedIn()` adalah **flag runtime** yang
+baru bernilai `true` setelah socket terautentikasi. Saat aplikasi baru dibuka flag itu masih `false`
+walaupun sesi tersimpan ada, sehingga alur kode meminta QR baru — padahal store berisi user ID dan
+whatsmeow menolak dengan `ErrQRStoreContainsID`.
+
+Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Client.HasSession()`):
+
+* `Connect()` melanjutkan sesi yang tersimpan; QR hanya diminta bila perangkat belum pernah tertaut.
+* Auto-connect saat aplikasi dibuka, tanpa scan QR / kode pairing.
+* Tombol **Hubungkan Ulang** dan **Putuskan Sesi** (unlink) — yang terakhir menghapus device dari store
+  lalu membangun ulang client, sehingga pairing dari awal bisa dilakukan tanpa restart aplikasi.
+
+### Umpan balik langsung di WhatsApp
+
+* **Centang biru**: pesan masuk di-acknowledge lewat `Client.MarkRead`.
+* **Indikator typing**: `Client.SendChatPresence` (composing) menyala selama agent bekerja, di-refresh
+  tiap 8 detik karena WhatsApp menurunkan status ini sendiri, lalu dimatikan setelah selesai.
+* **Balasan cepat**: bubble `⏳ Sedang berpikir...` dikirim seketika, lalu **diedit** menjadi jawaban
+  akhir (`Client.BuildEdit`) sehingga chat tetap satu gelembung. Bila WhatsApp menolak edit (window
+  edit 20 menit), otomatis fallback ke pesan baru. Bila agent gagal, bubble yang sama diubah menjadi
+  pesan error — tidak ada bubble "sedang berpikir" yang menggantung.
+* **Progres nyata**: retry & fallback dari Agent Loop mengedit bubble yang sama (mis.
+  `↻ Mencoba ulang (2/2)...`). Tool call akan memakai saluran progres yang sama pada Phase 6.
+
+---
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Hanya pesan teks; media diabaikan.
-* Belum ada tool system/terminal/memory layer — lihat tabel status di atas.
+* Belum ada tool system/terminal/memory layer — lihat tabel status di atas. Saluran progres untuk
+  tool call sudah tersedia (`AgentLoop.processInput(onProgress)`), tinggal dipakai saat Phase 6.
 * `applicationId` masih memakai nilai bawaan template.
 * `.env.example` masih berisi sisa template AI Studio dan tidak dipakai oleh build ini.
 

@@ -16,10 +16,12 @@ type WaEventListener interface {
 	// OnMessage is called for every incoming text message that is NOT sent by
 	// this device.
 	//
-	//	sender  - the author of the message (group participant inside a group chat)
-	//	chat    - the conversation JID; use this when replying
-	//	isGroup - true when the message came from a group conversation
-	//	text    - plain text content
+	//	sender    - the author of the message (group participant inside a group chat)
+	//	chat      - the conversation JID; use this when replying
+	//	isGroup   - true when the message came from a group conversation
+	//	text      - plain text content
+	//	messageID - WhatsApp message ID (Info.ID), needed to send a read receipt
+	//	            (MarkRead) or to edit the message later
 	//	timestamp - unix timestamp in seconds
-	OnMessage(sender string, chat string, isGroup bool, text string, timestamp int64)
+	OnMessage(sender string, chat string, isGroup bool, text string, messageID string, timestamp int64)
 }

@@ -222,12 +222,12 @@ fun WhatsAppGatewayScreen(
                     ) {
                         Column {
                             Text(
-                                text = "Status Sesi: ${if (isLoggedIn) "Logged In" else "Belum Login"}",
+                                text = if (isLoggedIn) "Perangkat tertaut" else "Belum tertaut",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "Detail: $connectionStatus",
+                                text = connectionStatus,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -235,12 +235,12 @@ fun WhatsAppGatewayScreen(
 
                         if (isLoggedIn) {
                             OutlinedButton(
-                                onClick = { viewModel.logout() },
+                                onClick = { viewModel.resetSession() },
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
                             ) {
                                 Icon(imageVector = Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Logout")
+                                Text("Putuskan Sesi")
                             }
                         }
                     }
@@ -259,7 +259,7 @@ fun WhatsAppGatewayScreen(
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Hubungkan")
+                            Text(if (isLoggedIn) "Hubungkan Ulang" else "Hubungkan")
                         }
 
                         OutlinedButton(
@@ -272,6 +272,14 @@ fun WhatsAppGatewayScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Putuskan")
                         }
+                    }
+
+                    if (isLoggedIn && !isConnected) {
+                        Text(
+                            text = "Sesi tersimpan di perangkat ini, jadi WhatsApp akan tersambung kembali tanpa perlu scan QR. Tekan Hubungkan Ulang (atau biarkan aplikasi melakukannya sendiri saat dibuka).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
@@ -315,9 +323,9 @@ fun WhatsAppGatewayScreen(
                 }
             }
 
-            // 2. Authentication Section (Only shown if not logged in)
+            // 2. Authentication Section (only needed while no device is linked)
             if (!isLoggedIn) {
-                SectionHeader(title = "Autentikasi Perangkat WhatsApp")
+                SectionHeader(title = "Tautkan Perangkat WhatsApp")
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
