@@ -24,6 +24,7 @@ WhatsApp  ⇄  Go gateway (whatsmeow)  ⇄  Kotlin Bridge  ⇄  Agent Loop  ⇄ 
 | Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
 | Persistensi | `com.example.agent.storage` | Room: `agent_sessions`, `agent_messages`, `agent_configs` + `SecretCipher` (API key) |
 | Workspace | `com.example.agent.workspace` | `Workspace` — root per-agent di `filesDir/workspaces/<agentId>` + guard path (anti `..` & symlink escape) |
+| Terminal | `com.example.agent.tool.TerminalTools` | Terminal agent baca-terbaca dengan cwd persisten per percakapan, direct-argv (tanpa shell chaining), timeout, dan output cap |
 | Adapter | `WhatsAppAgentBridge` | Menjembatani gateway ⇄ agent loop, memuat/menyimpan konfigurasi |
 
 **Alur pesan**
@@ -63,7 +64,8 @@ antar kontak tidak pernah tercampur.
 | Pesan media (gambar/video/audio/dokumen) | ❌ |
 | Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
 | Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
-| Terminal, permission/approval | ❌ |
+| Terminal agent workspace: `pwd/cd/ls/cat/grep/wc/head/tail`, cwd per percakapan, timeout/output cap | ✅ |
+| Terminal interaktif/proot, shell mutatif, network, package manager, permission/approval | ❌ |
 | Memory layer (episodic/knowledge/learning), search, context manager | ❌ |
 | Subagent, council, multimodal delegation | ❌ |
 | Task/job system, scheduler, MCP, knowledge UI, browser automation | ❌ |
@@ -249,14 +251,30 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 * Developer → Diagnostics menampilkan path workspace yang sedang dipakai, dan Tool Registry
   menampilkan seluruh tool terdaftar beserta kelas permission-nya.
 
+### Phase 8 — Restricted workspace terminal
+
+* Tool `run_terminal_command` menjalankan proses nyata secara **direct-argv**, tanpa `sh -c`; karena itu `;`, pipe,
+  redirect, dan command chaining tidak pernah ditafsirkan sebagai shell kedua.
+* Command yang tersedia masih read-only: `pwd`, `cd`, `ls`, `cat`, `grep`, `wc`, `head`, dan `tail`.
+  Command network, package manager, proses mutatif, dan akses path di luar workspace ditolak.
+* Setiap percakapan memiliki cwd logis sendiri. `cd` bertahan selama proses aplikasi berjalan, tetapi tidak bocor
+  ke percakapan lain; directory selalu di-resolve dan di-check secara kanonik oleh `Workspace`.
+* Timeout dijepit 1–30 detik dan stdout/stderr masing-masing dibatasi 15.000 karakter. Dua stream proses
+  selalu dibaca paralel supaya output besar tidak menyebabkan deadlock.
+* Agent Loop memberikan `ToolExecutionContext` host-owned ke tool, sehingga model tidak dapat memalsukan
+  `conversationId` untuk mengambil cwd sesi lain.
+* Terminal human-facing, Linux rootfs/proot, SSH, background process, dan approval interaktif **belum**
+  diimplementasikan; terminal ini sengaja tidak mengklaim kemampuan tersebut.
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Hanya pesan teks; media diabaikan.
-* Tool bawaan saat ini: `current_time` + 8 file tool yang terkunci di dalam workspace. Terminal
-  menyusul di Phase 8 dan baru akan jalan lewat lapisan approval (Phase 9).
+* Tool bawaan saat ini: `current_time`, 8 file tool yang terkunci di dalam workspace, dan terminal
+  baca-terbaca yang juga terkunci pada workspace. Shell mutatif, package manager, network, dan proses
+  background belum tersedia; perlu lapisan permission/approval lebih dulu.
 * `read_file` memotong isi pada 16.000 karakter dan memberi tahu model bahwa isinya dipotong;
   pembacaan bertahap (offset/limit) belum ada.
 * `applicationId` masih memakai nilai bawaan template.
@@ -264,8 +282,8 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 
 ## Roadmap berikutnya
 
-Urutan yang disarankan (mengikuti `DOC/context-2.md`): Terminal → Permission/Approval → Search →
-Memory layer → Learning → Context Manager → Subagent → Council → Multimodal → Observability →
+Urutan yang disarankan (mengikuti `DOC/context-2.md`): Permission/Approval → Search → Memory layer →
+Learning → Context Manager → Subagent → Council → Multimodal → Observability →
 Task/Scheduler → MCP → Knowledge UI → Browser → WhatsApp media.
 
 Dokumen rencana lengkap ada di `DOC/`.

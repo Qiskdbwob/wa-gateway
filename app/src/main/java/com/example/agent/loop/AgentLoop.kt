@@ -14,6 +14,8 @@ import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.storage.AgentSessionRepository
+import com.example.agent.tool.ContextAwareTool
+import com.example.agent.tool.ToolExecutionContext
 import com.example.agent.tool.ToolRegistry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -362,7 +364,18 @@ class AgentLoop(
                                         )
                                     } else {
                                         try {
-                                            tool.execute(call.arguments)
+                                            val executionContext = ToolExecutionContext(
+                                                agentId = agent.id,
+                                                sessionId = session.sessionId,
+                                                conversationId = input.conversationId,
+                                                channel = input.channel,
+                                                metadata = input.metadata
+                                            )
+                                            if (tool is ContextAwareTool) {
+                                                tool.execute(call.arguments, executionContext)
+                                            } else {
+                                                tool.execute(call.arguments)
+                                            }
                                         } catch (e: Exception) {
                                             log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
                                             ToolResult(

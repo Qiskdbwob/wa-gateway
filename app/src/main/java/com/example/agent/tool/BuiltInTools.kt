@@ -12,8 +12,9 @@ import java.util.TimeZone
  * Phase 6 — first built-in tool.
  *
  * It is deliberately small and completely real (no stubbed data): it answers questions such
- * as "jam berapa sekarang?" with the device clock. File, terminal and network tools belong to
- * Phase 7/8 and must go through the workspace + permission layers instead.
+ * as "jam berapa sekarang?" with the device clock. File tools live in [FileTools.kt], while the
+ * restricted workspace terminal lives in [TerminalTools.kt]. Network and mutating terminal commands
+ * still require the future permission/approval layer.
  *
  * The arguments are parsed without org.json so the tool is testable in plain JVM unit tests
  * (the bare org.json stubs throw "not mocked" outside of Robolectric).

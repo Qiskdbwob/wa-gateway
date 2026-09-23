@@ -49,14 +49,21 @@ class ToolRegistry(initialTools: List<Tool> = emptyList()) {
         /**
          * Registry with the tools shipped by the app itself.
          *
-         * The file tools are registered only when a [workspace] is given: without the Phase 7
-         * sandbox there is nothing that may touch files, so the tool must not exist at all
-         * instead of failing at call time.
+         * File and terminal tools are registered only when a [workspace] is given: without
+         * the Phase 7 sandbox there is nothing safe for them to operate on, so they must not
+         * exist at all instead of failing at call time.
          */
-        fun withBuiltIns(workspace: Workspace? = null): ToolRegistry {
+        fun withBuiltIns(
+            workspace: Workspace? = null,
+            terminalRunner: TerminalCommandRunner? = null
+        ): ToolRegistry {
             val tools = mutableListOf<Tool>(CurrentTimeTool())
             if (workspace != null) {
                 tools += workspaceFileTools(workspace)
+                tools += WorkspaceTerminalTool(
+                    workspace = workspace,
+                    runner = terminalRunner ?: ProcessTerminalCommandRunner()
+                )
             }
             return ToolRegistry(tools)
         }
