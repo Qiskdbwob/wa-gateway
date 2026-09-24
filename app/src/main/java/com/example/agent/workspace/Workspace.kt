@@ -89,10 +89,30 @@ class Workspace(rootDirectory: File) {
         /** Entries returned by one directory listing. */
         const val MAX_LIST_ENTRIES = 200
 
-        /** Workspace of a single agent: `<base>/workspaces/<agentId>`. */
+        /**
+         * Workspace of a single agent: `<base>/workspaces/<agentId>`. [agentId] is sanitised into
+         * a single safe folder name so the result always stays directly under `workspaces/`.
+         */
         fun of(baseDirectory: File, agentId: String): Workspace {
-            val safeAgentId = agentId.trim().ifEmpty { "default-agent" }
+            val safeAgentId = sanitiseAgentId(agentId)
             return Workspace(File(File(baseDirectory, WORKSPACES_DIRECTORY), safeAgentId))
+        }
+
+        /**
+         * Turns [agentId] into a safe single-segment directory name. Only letters, digits, `-`,
+         * `_` and `.` survive; anything else (including path separators) becomes `_`, so the name
+         * can never contain a directory traversal. Empty and dot-only names (`.` / `..`) fall back
+         * to `"default-agent"`, keeping every workspace directly under `workspaces/`.
+         */
+        private fun sanitiseAgentId(agentId: String): String {
+            val replaced = agentId.trim()
+                .map { ch -> if (ch.isLetterOrDigit() || ch == '-' || ch == '_' || ch == '.') ch else '_' }
+                .joinToString("")
+            // After the substitutions above the name is a single path segment (no '/'), so it can
+            // no longer walk out of workspaces/. Reject the remaining ambiguous cases (empty, or a
+            // name made only of dots such as "." / "..") so the folder name is always predictable.
+            val ambiguous = replaced.isEmpty() || replaced.all { it == '.' }
+            return if (ambiguous) "default-agent" else replaced
         }
     }
 }

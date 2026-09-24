@@ -296,4 +296,45 @@ class WorkspaceToolTest {
         assertTrue(provider.requests[1].messages.last().content.contains("catatan.md"))
         assertTrue(loop.activityLogs.value.any { it.contains("TOOL_RESULT") && it.contains("write_file") })
     }
+
+    @Test
+    fun phase7_testN_workspaceOfSanitisesAgentIdThatWouldEscapeTheWorkspacesDirectory() {
+        val base = temp.newFolder("base")
+        val workspacesDirectory = File(base, Workspace.WORKSPACES_DIRECTORY)
+        val insidePrefix = workspacesDirectory.canonicalPath + File.separator
+
+        for (input in listOf("../evil", "a/b", "..", "", "   ", "/etc")) {
+            val workspace = Workspace.of(base, input)
+
+            assertTrue(
+                "input '$input' harus tetap di dalam workspaces/",
+                workspace.root.canonicalPath.startsWith(insidePrefix)
+            )
+            // Direct child: parent must be exactly the workspaces directory.
+            assertEquals(
+                workspacesDirectory.canonicalPath,
+                workspace.root.parentFile.canonicalPath
+            )
+            if (input == ".." || input.isBlank()) {
+                assertEquals(
+                    File(workspacesDirectory, "default-agent").canonicalPath,
+                    workspace.root.canonicalPath
+                )
+            }
+        }
+
+        for (input in listOf("agent_1", "default-agent")) {
+            val workspace = Workspace.of(base, input)
+
+            assertEquals(
+                File(workspacesDirectory, input).canonicalPath,
+                workspace.root.canonicalPath
+            )
+            assertTrue(workspace.root.canonicalPath.startsWith(insidePrefix))
+        }
+
+        // Nothing created by the sanitised ids may sit next to `workspaces/`.
+        assertFalse(File(base, "evil").exists())
+        assertFalse(File(File(base, Workspace.WORKSPACES_DIRECTORY).parentFile, "evil").exists())
+    }
 }
