@@ -72,7 +72,7 @@ fun interface TerminalCommandRunner {
  * means shell operators in model text remain ordinary arguments and cannot start another command.
  */
 class ProcessTerminalCommandRunner(
-    private val maxStreamChars: Int = TerminalTools.MAX_STREAM_CHARS
+    private val maxStreamChars: Int = WorkspaceTerminalTool.MAX_STREAM_CHARS
 ) : TerminalCommandRunner {
 
     private data class StreamCapture(val text: String, val truncated: Boolean)
@@ -143,7 +143,7 @@ class ProcessTerminalCommandRunner(
     }
 
     private fun readBounded(stream: java.io.InputStream, limit: Int): StreamCapture {
-        val safeLimit = limit.coerceIn(1, MAX_STREAM_CHARS)
+        val safeLimit = limit.coerceIn(1, WorkspaceTerminalTool.MAX_STREAM_CHARS)
         val output = StringBuilder(minOf(safeLimit, 4096))
         var truncated = false
         try {
@@ -240,7 +240,9 @@ class WorkspaceTerminalTool(
     }
 
     private suspend fun runGuarded(input: String, session: SessionState): ToolResult {
-        val command = requireArg(input, "command").trim()
+        val command = JsonArgs.string(input, "command")?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: throw ToolInputException("Argumen 'command' wajib diisi.")
         if (command.length > MAX_COMMAND_CHARS) {
             throw ToolInputException("Perintah terlalu panjang (maksimum $MAX_COMMAND_CHARS karakter).")
         }
