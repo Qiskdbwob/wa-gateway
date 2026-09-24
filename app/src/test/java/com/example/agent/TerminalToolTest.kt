@@ -262,4 +262,163 @@ class TerminalToolTest {
         assertEquals(2, provider.calls)
         assertTrue(loop.activityLogs.value.any { it.contains("TOOL_RESULT") && it.contains("run_terminal_command") })
     }
+
+    @Test
+    fun phase8_test9_argvForLsGrepWcHeadAndTail() = runBlocking {
+        val root = temp.newFolder("workspace")
+        val docs = File(root, "docs").apply { mkdirs() }
+        val notes = File(root, "notes.txt").apply { writeText("satu\ndua\ntiga") }
+        val runner = RecordingRunner()
+        val tool = WorkspaceTerminalTool(Workspace(root), runner)
+        val ctx = context("chat-argv")
+
+        // ls without flag: argv == [<absolute target>] (cwd == workspace root).
+        assertTrue(tool.execute(args("command" to "ls"), ctx).success)
+        assertEquals(listOf(root.canonicalPath), runner.invocations.last().arguments)
+        assertEquals("ls", runner.invocations.last().executable)
+        assertEquals(root.canonicalPath, runner.invocations.last().workingDirectory.canonicalPath)
+
+        // ls -l: argv == ["-l", <absolute target>].
+        assertTrue(tool.execute(args("command" to "ls -l"), ctx).success)
+        assertEquals(listOf("-l", root.canonicalPath), runner.invocations.last().arguments)
+
+        // ls -la docs: argv == ["-la", <absolute docs>].
+        assertTrue(tool.execute(args("command" to "ls -la docs"), ctx).success)
+        assertEquals(listOf("-la", docs.canonicalPath), runner.invocations.last().arguments)
+
+        // grep <pola> <path>: argv == ["--", pola, <absolute path>].
+        assertTrue(tool.execute(args("command" to "grep topic notes.txt"), ctx).success)
+        assertEquals("grep", runner.invocations.last().executable)
+        assertEquals(listOf("--", "topic", notes.canonicalPath), runner.invocations.last().arguments)
+
+        // wc <path>: argv == [<absolute path>].
+        assertTrue(tool.execute(args("command" to "wc notes.txt"), ctx).success)
+        assertEquals("wc", runner.invocations.last().executable)
+        assertEquals(listOf(notes.canonicalPath), runner.invocations.last().arguments)
+
+        // wc -l <path>: argv == ["-l", <absolute path>].
+        assertTrue(tool.execute(args("command" to "wc -l notes.txt"), ctx).success)
+        assertEquals(listOf("-l", notes.canonicalPath), runner.invocations.last().arguments)
+
+        // head <path>: argv == [<absolute path>].
+        assertTrue(tool.execute(args("command" to "head notes.txt"), ctx).success)
+        assertEquals("head", runner.invocations.last().executable)
+        assertEquals(listOf(notes.canonicalPath), runner.invocations.last().arguments)
+
+        // head -n 3 <path>: argv == ["-n", "3", <absolute path>].
+        assertTrue(tool.execute(args("command" to "head -n 3 notes.txt"), ctx).success)
+        assertEquals(listOf("-n", "3", notes.canonicalPath), runner.invocations.last().arguments)
+
+        // tail -n 2 <path>: argv == ["-n", "2", <absolute path>].
+        assertTrue(tool.execute(args("command" to "tail -n 2 notes.txt"), ctx).success)
+        assertEquals("tail", runner.invocations.last().executable)
+        assertEquals(listOf("-n", "2", notes.canonicalPath), runner.invocations.last().arguments)
+
+        assertEquals(9, runner.invocations.size)
+    }
+
+    @Test
+    fun phase8_test10_pathsAreCanonicalisedAgainstSessionCwdForNonCdCommands() = runBlocking {
+        val root = temp.newFolder("workspace")
+        val docs = File(root, "docs").apply { mkdirs() }
+        val nested = File(docs, "nested.txt").apply { writeText("halo") }
+        val runner = RecordingRunner()
+        val tool = WorkspaceTerminalTool(Workspace(root), runner)
+        val ctx = context("chat-canoncial")
+
+        assertTrue(tool.execute(args("command" to "cd docs"), ctx).success)
+        assertTrue(tool.execute(args("command" to "head nested.txt"), ctx).success)
+        assertEquals(listOf(nested.canonicalPath), runner.invocations.last().arguments)
+        assertEquals(docs.canonicalPath, runner.invocations.last().workingDirectory.canonicalPath)
+
+        // Relative path segments are canonicalised relative to the session cwd, not the root.
+        assertTrue(tool.execute(args("command" to "wc ./nested.txt"), ctx).success)
+        assertEquals(listOf(nested.canonicalPath), runner.invocations.last().arguments)
+        assertTrue(tool.execute(args("command" to "grep halo ./nested.txt"), ctx).success)
+        assertEquals(listOf("--", "halo", nested.canonicalPath), runner.invocations.last().arguments)
+    }
+
+    @Test
+    fun phase8_test11_nonCdCommandsRejectPathsOutsideWorkspaceWithoutRunning() = runBlocking {
+        val root = temp.newFolder("workspace")
+        val workspace = Workspace(root)
+        val runner = RecordingRunner()
+        val tool = WorkspaceTerminalTool(workspace, runner)
+        val ctx = context("chat-outside")
+
+        val commands = listOf(
+            "grep x ../../outside.txt",
+            "wc ../../outside.txt",
+            "head ../../outside.txt",
+            "ls ../../outside"
+        )
+        for (command in commands) {
+            val result = tool.execute(args("command" to command), ctx)
+            assertFalse("'$command' seharusnya ditolak", result.success)
+            assertTrue(
+                "'$command' error harus menyebut luar workspace",
+                result.error!!.contains("luar workspace")
+            )
+        }
+        // Tidak ada proses yang boleh dijalankan untuk path di luar workspace.
+        assertTrue(runner.invocations.isEmpty())
+    }
+
+    @Test
+    fun phase8_test12_headAndTailLineCountIsValidatedBeforeRunning() = runBlocking {
+        val root = temp.newFolder("workspace")
+        val notes = File(root, "notes.txt").apply { writeText("satu\ndua\ntiga") }
+        val runner = RecordingRunner()
+        val tool = WorkspaceTerminalTool(Workspace(root), runner)
+        val ctx = context("chat-count")
+
+        val invalid = listOf(
+            "head -n 0 ${notes.name}",
+            "head -n 5000 ${notes.name}",
+            "tail -n 0 ${notes.name}",
+            "tail -n 5000 ${notes.name}"
+        )
+        for (command in invalid) {
+            val result = tool.execute(args("command" to command), ctx)
+            assertFalse("'$command' seharusnya ditolak", result.success)
+            assertTrue(
+                "'$command' error harus menyebut Jumlah baris",
+                result.error!!.contains("Jumlah baris")
+            )
+        }
+        assertTrue(runner.invocations.isEmpty())
+
+        // Batas atas yang valid (1..1000) tetap diizinkan dan menjalankan proses.
+        assertTrue(tool.execute(args("command" to "head -n 1000 ${notes.name}"), ctx).success)
+        assertEquals(
+            listOf("-n", "1000", notes.canonicalPath),
+            runner.invocations.last().arguments
+        )
+    }
+
+    @Test
+    fun phase8_test13_invalidSyntaxForGrepWcAndUnknownFlagIsRejected() = runBlocking {
+        val root = temp.newFolder("workspace")
+        val notes = File(root, "notes.txt").apply { writeText("satu\ndua") }
+        val runner = RecordingRunner()
+        val tool = WorkspaceTerminalTool(Workspace(root), runner)
+        val ctx = context("chat-syntax")
+
+        val invalidSyntax = listOf(
+            "grep hanya-pola",        // 1 argumen, kurang path
+            "grep a b c",             // 3 argumen, terlalu banyak
+            "wc ${notes.name} extra", // flag tak dikenal + argumen berlebih
+            "wc -x ${notes.name}"     // flag tak dikenal
+        )
+        for (command in invalidSyntax) {
+            val result = tool.execute(args("command" to command), ctx)
+            assertFalse("'$command' seharusnya ditolak", result.success)
+            assertTrue(
+                "'$command' error harus menyebut Sintaks tidak valid",
+                result.error!!.contains("Sintaks tidak valid")
+            )
+        }
+        assertTrue(runner.invocations.isEmpty())
+    }
+
 }
