@@ -60,13 +60,21 @@ antar kontak tidak pernah tercampur.
 | Penyimpanan API key terenkripsi (Android Keystore, AES-256-GCM) | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
-| Pesan media (gambar/video/audio/dokumen) | ❌ |
+| Kontrol akses kontak: whitelist & blacklist (per nomor, dinormalisasi dari JID) | ✅ |
+| Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
+| Pesan media masuk: gambar/video (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
+| Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (API siap; UI belum memakainya) |
 | Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
 | Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
-| Terminal, permission/approval | ❌ |
-| Memory layer (episodic/knowledge/learning), search, context manager | ❌ |
-| Subagent, council, multimodal delegation | ❌ |
-| Task/job system, scheduler, MCP, knowledge UI, browser automation | ❌ |
+| Permission tool (SAFE / AUTO_SAFE / CONFIRM) + approval destruktif via chat & UI | ✅ |
+| Memory layer: episodic/knowledge/learning + RAG lexical + context manager | ✅ |
+| Auto & manual compact (`/compact`) menjadi memori episodik | ✅ |
+| Subagent latar belakang (tidak memblokir balasan agent utama) | ✅ |
+| Council 2 debater + moderator, self-reflection (`reflect`) & learning pipeline | ✅ |
+| Task/job system: scheduler interval + UI Tugas (Scheduled/Sub-agent) | ✅ |
+| Web search & web fetch (read-only, AUTO_SAFE) | ✅ |
+| Terminal, MCP, browser automation, Linux sandbox | ❌ (dokumen referensi ada di `DOC/reference/`) |
+| Skills/marketplace, observability lanjutan | ❌ |
 
 Fitur yang belum ada **tidak** ditampilkan sebagai UI palsu — menu yang belum didukung menampilkan
 empty state yang menjelaskan statusnya.
@@ -151,8 +159,14 @@ aktif, agent tetap membalas secara lokal tanpa jaringan.
 * Pesan yang dikirim oleh akun sendiri **tidak** diproses (`Info.IsFromMe`), sehingga agent tidak
   bisa membalas dirinya sendiri.
 * Saat ini pesan grup diabaikan untuk mencegah agent mengirim ke grup tanpa konfigurasi.
-* Tool yang berkelas `CONFIRM` **tidak** pernah ditawarkan ke model sampai lapisan approval (Phase 9)
-  benar-benar ada, jadi permission tidak sekadar dekorasi.
+* **Whitelist mode**: bila diaktifkan (Pengaturan atau `/whitelist on`), hanya nomor yang terdaftar
+  yang diproses; pesan lain di-drop sebelum masuk ke model dan dicatat sebagai `CONTACT_BLOCKED`.
+  Blacklist selalu menang atas whitelist.
+* Tool berkelas `CONFIRM` **tidak** pernah ditawarkan ke model selama approval dimatikan, dan saat
+  approval aktif pemanggilannya **tidak langsung dieksekusi** — agent membuat request `appr-xxxxxxxx`
+  dan menunggu `/approve <id>` atau `/reject <id>` (kedaluwarsa 24 jam, hanya bisa diputuskan sekali).
+  Hanya tool destruktif (saat ini `delete_path`) yang masuk kelas ini; tool baca-tulis lain tetap
+  otomatis.
 * Agent Loop tidak menyimpan pesan tool ke database; hanya pertanyaan pengguna dan jawaban akhir
   yang masuk riwayat percakapan. Detail teknis tool masuk ke log aktivitas.
 
@@ -240,8 +254,10 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
   path absolut seperti `/etc/passwd` dibaca sebagai path relatif di dalam workspace, bukan path
   sistem.
 * Delapan file tool: `list_files`, `read_file`, `write_file`, `append_file`, `move_path`,
-  `copy_path`, `delete_path`, `make_directory`. Semuanya `SAFE` karena sandbox-nya yang menjadi
-  permission — jadi tidak ada tool file yang bisa keluar dari workspace walau model memintanya.
+  `copy_path`, `delete_path`, `make_directory`. Tujuh di antaranya `SAFE` karena sandbox-nya yang
+  menjadi permission — jadi tidak ada tool file yang bisa keluar dari workspace walau model
+  memintanya. `delete_path` adalah satu-satunya tool destruktif dan karena itu berkelas `CONFIRM`
+  (wajib approval, lihat Phase 8).
 * Penghapusan direktori yang masih berisi wajib memakai `recursive=true`, dan akar workspace tidak
   bisa dihapus sama sekali.
 * Argumen tool dibaca oleh pembaca JSON kecil milik sendiri (`JsonArgs`) yang sadar string, jadi isi
@@ -249,14 +265,72 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 * Developer → Diagnostics menampilkan path workspace yang sedang dipakai, dan Tool Registry
   menampilkan seluruh tool terdaftar beserta kelas permission-nya.
 
+### Phase 8 — Keamanan kontak, memori, approval, scheduler, subagent & media
+
+**Kontrol akses kontak (prioritas keamanan).** `contact_rules` menyimpan whitelist/blacklist satu
+baris per nomor; `normalizePhone()` menyamakan semua bentuk JID (`@s.whatsapp.net`, `@c.us`, device
+suffix, `+`, spasi) sebelum dicocokkan. Saat whitelist mode aktif, hanya nomor terdaftar yang
+lolos — pengecekan terjadi **sebelum** agent membaca pesan, jadi pesan yang diblokir tidak pernah
+masuk history maupun memori. Pesan grup tetap diabaikan. Bisa dikelola dari Pengaturan atau lewat
+`/whitelist` dan `/blacklist`.
+
+**Memori jangka panjang.** Tiga lapisan dalam satu tabel `memory_items`: `EPISODIC` (ringkasan
+compact & peristiwa penting), `KNOWLEDGE` (fakta yang diminta diingat), `LEARNING` (pelajaran dari
+tool `reflect`, berstatus `candidate` → `active` setelah disetujui). Retrieval memakai RAG leksikal
+milik sendiri (`MemoryRetriever`: stopwords ID+EN, skor overlap + boost kebaruan maksimum 25%) tanpa
+layanan embedding eksternal. `ContextManager` menyuntikkan memori relevan + pelajaran aktif ke
+system prompt per-turn (maks ~1.200 karakter per bagian), dan item yang dipakai ditandai
+(`useCount`, `lastUsedAt`).
+
+**Compact.** Otomatis saat jumlah pesan sesi melewati `maxContextMessages`, atau manual dengan
+`/compact`. Pesan lama diringkas model (fallback: ringkasan ekstraktif bila provider tidak tersedia),
+disimpan sebagai memori episodik **dan** pesan `SYSTEM` berawalan `Ringkasan sebelumnya (compact):`,
+lalu baris mentahnya dipangkas. Jadi informasi tidak hilang meski konteksnya dipendekkan.
+
+**Approval hanya untuk yang destruktif.** `ToolPermission` sekarang bertingkat: `SAFE` (otomatis),
+`AUTO_SAFE` (read-only network: `web_search`, `web_fetch`), `CONFIRM` (destruktif: `delete_path`).
+Tool `CONFIRM` tidak pernah ditawarkan ke model saat approval dimatikan; saat aktif, pemanggilan
+pertama membuat record `approval_requests` (`appr-xxxxxxxx`, TTL 24 jam) dan model diminta memberi
+tahu pengguna. Persetujuan datang lewat `/approve <id>` di chat atau tombol Setujui di Pengaturan —
+bukan dialog desktop yang tidak ada di WhatsApp. Satu request hanya bisa diputuskan sekali.
+
+**Scheduler.** `scheduled_tasks` menyimpan ekspresi `interval:<detik>` (minimum 60 detik,
+maksimum 30 hari) + prompt yang dijalankan berkala. Ticker 60 detik mengeksekusi task yang jatuh
+tempo lewat AgentLoop (jawabannya dikirim ke chat asal), mencatat `COMPLETED`/`FAILED` beserta
+hasil/errornya, dan **menentukan jadwal berikutnya sebelum eksekusi** supaya eksekusi lambat tidak
+memicu dobel. Tool `schedule_task` membuat task ini dari percakapan.
+
+**Subagent latar belakang.** `delegate_task` membuat record `agent_tasks` dan langsung
+mengembalikan id-nya — agent utama **tidak menunggu**, ia menjawab pengguna lebih dulu. Subagent
+berjalan di coroutine sendiri dengan persona/model/toolset sendiri; setelah selesai, hasilnya
+dikirim ke chat sebagai pesan baru. Status QUEUED/RUNNING/COMPLETED/FAILED terlihat di tab Tugas.
+
+**Council & refleksi.** `council` menjalankan dua sudut pandang (pendukung vs kritikus) lalu satu
+moderator yang menyintesis, dibatasi `withTimeout(120s)` dan panjang jawaban supaya tetap wajar di
+WhatsApp. `reflect` menyimpan pelajaran sebagai kandidat, bukan langsung dipercaya.
+
+**Media WhatsApp.** Sisi Go mengirim payload protobuf media ke Kotlin (`OnMedia`), lalu bridge
+mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Gambar/video dianalisis provider vision
+(`OpenAiVisionProvider` atau `GeminiVisionProvider` native), dokumen teks dibaca langsung, dan
+hasilnya digabung ke prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
+Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersedia di
+`WaGatewayManager`.
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
-* Hanya pesan teks; media diabaikan.
-* Tool bawaan saat ini: `current_time` + 8 file tool yang terkunci di dalam workspace. Terminal
-  menyusul di Phase 8 dan baru akan jalan lewat lapisan approval (Phase 9).
+* Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
+  dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). Bila API key vision
+  belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
+* Tool bawaan saat ini: `current_time`, 8 file tool (workspace-locked, `delete_path` = CONFIRM),
+  `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
+  `schedule_task`. Terminal/MCP/browser automation belum ada — dokumen referensinya sudah disimpan di
+  `DOC/reference/` untuk fase berikutnya.
+* Scheduler berjalan dari proses aplikasi (ticker 60 detik). Bila sistem mematikan proses, task baru
+  dieksekusi setelah aplikasi dibuka lagi; eksekusi latar penuh (WorkManager/foreground service)
+  belum dipakai.
 * `read_file` memotong isi pada 16.000 karakter dan memberi tahu model bahwa isinya dipotong;
   pembacaan bertahap (offset/limit) belum ada.
 * `applicationId` masih memakai nilai bawaan template.
@@ -264,8 +338,12 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 
 ## Roadmap berikutnya
 
-Urutan yang disarankan (mengikuti `DOC/context-2.md`): Terminal → Permission/Approval → Search →
-Memory layer → Learning → Context Manager → Subagent → Council → Multimodal → Observability →
-Task/Scheduler → MCP → Knowledge UI → Browser → WhatsApp media.
+Sudah selesai pada iterasi ini: kontrol akses kontak, command chat, approval destruktif, memori
+jangka panjang + compact, subagent latar belakang, council & refleksi, scheduler, web tools, dan
+media WhatsApp masuk/keluar.
 
-Dokumen rencana lengkap ada di `DOC/`.
+Urutan yang disarankan berikutnya: Observability lanjutan → Knowledge UI (skill) → MCP →
+Terminal/sandbox Linux → Browser automation.
+
+Dokumen rencana lengkap ada di `DOC/`. Dossier referensi untuk sandbox Linux, terminal bawaan, dan
+browser automation (transfer spec lengkap, bukan sekadar ringkasan) ada di `DOC/reference/`.

@@ -76,15 +76,9 @@ data class Model(
 )
 
 /**
- * Permission class of a tool (Phase 6 declares it, Phase 9 enforces it during execution).
- *
- * Only [SAFE] tools are advertised to the model by default: a tool that needs manual
- * approval must not be offered while there is no approval layer to answer for it.
+ * Permission classes of a tool (Phase 6 declares it, the approval layer enforces it at
+ * execution time). Declared in [AgentToolModels.kt] — SAFE, AUTO_SAFE, CONFIRM.
  */
-enum class ToolPermission {
-    SAFE,
-    CONFIRM
-}
 
 /** A tool invocation requested by the model. */
 data class ToolCall(

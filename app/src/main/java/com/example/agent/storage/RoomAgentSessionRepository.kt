@@ -101,6 +101,11 @@ class RoomAgentSessionRepository(
         }
     }
 
+    override suspend fun deleteMessagesUpTo(sessionId: String, upTo: Long): Unit = withContext(Dispatchers.IO) {
+        messageDao.deleteMessagesUpTo(sessionId, upTo)
+        Unit
+    }
+
     suspend fun saveConfig(config: AgentConfigEntity) = withContext(Dispatchers.IO) {
         configDao.saveConfig(config)
     }

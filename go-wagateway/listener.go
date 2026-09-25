@@ -24,4 +24,16 @@ type WaEventListener interface {
 	//	            (MarkRead) or to edit the message later
 	//	timestamp - unix timestamp in seconds
 	OnMessage(sender string, chat string, isGroup bool, text string, messageID string, timestamp int64)
+
+	// OnMedia is called for every incoming media message (image, audio, video,
+	// document) that is NOT sent by this device.
+	//
+	//	mediaType - "image", "audio", "video" or "document"
+	//	mimetype  - e.g. "image/jpeg", "audio/ogg; codecs=opus"
+	//	caption   - user caption when present (image/video/document), otherwise ""
+	//	filename  - document file name when present, otherwise ""
+	//	payload   - marshalled protobuf of the specific media message (waE2E.ImageMessage
+	//	            / AudioMessage / VideoMessage / DocumentMessage). Pass it back to
+	//	            Client.DownloadMedia to download and decrypt the attachment.
+	OnMedia(sender string, chat string, isGroup bool, mediaType string, mimetype string, caption string, filename string, messageID string, timestamp int64, payload []byte)
 }

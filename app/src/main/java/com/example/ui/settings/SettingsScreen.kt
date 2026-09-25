@@ -73,6 +73,29 @@ fun SettingsScreen(
     val connectionStatus by viewModel.connectionStatus.collectAsState()
     val feedback by viewModel.sendFeedback.collectAsState()
 
+    // Priority 1 — access control
+    val whitelistMode by viewModel.whitelistMode.collectAsState()
+    val whitelistContacts by viewModel.whitelistContacts.collectAsState()
+    val blacklistContacts by viewModel.blacklistContacts.collectAsState()
+    val contactNumberInput by viewModel.contactNumberInput.collectAsState()
+    val contactLabelInput by viewModel.contactLabelInput.collectAsState()
+
+    // Priority 2 — long-term memory
+    val longTermMemoryEnabled by viewModel.longTermMemoryEnabled.collectAsState()
+    val autoCompactEnabled by viewModel.autoCompactEnabled.collectAsState()
+    val maxContextMessages by viewModel.maxContextMessages.collectAsState()
+
+    // Priority 3 — approvals
+    val approvalEnabled by viewModel.approvalEnabled.collectAsState()
+    val pendingApprovals by viewModel.pendingApprovals.collectAsState()
+
+    // Priority 5 — vision
+    val visionBaseUrl by viewModel.visionBaseUrl.collectAsState()
+    val visionApiKey by viewModel.visionApiKey.collectAsState()
+    val visionModelId by viewModel.visionModelId.collectAsState()
+    val visionGeminiNative by viewModel.visionGeminiNative.collectAsState()
+
+    var showVisionKey by remember { mutableStateOf(false) }
     var showApiKey by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
@@ -330,7 +353,366 @@ fun SettingsScreen(
             }
         }
 
-        // 4. Developer & Diagnostik
+        // 4. Keamanan & Akses (Priority 1 + 3)
+        SectionHeader(title = "Keamanan & Akses", icon = Icons.Default.Security)
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("settings_security_card"),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Mode whitelist",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Hanya nomor di whitelist yang boleh berbicara dengan agent",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = whitelistMode,
+                        onCheckedChange = { viewModel.setWhitelistMode(it) },
+                        modifier = Modifier.testTag("settings_whitelist_switch")
+                    )
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Persetujuan tool destruktif",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Tool yang menghapus/mengubah data harus disetujui lewat chat",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = approvalEnabled,
+                        onCheckedChange = { viewModel.setApprovalEnabled(it) },
+                        modifier = Modifier.testTag("settings_approval_switch")
+                    )
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                OutlinedTextField(
+                    value = contactNumberInput,
+                    onValueChange = { viewModel.contactNumberInput.value = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_contact_number"),
+                    label = { Text("Nomor (format internasional)") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = contactLabelInput,
+                    onValueChange = { viewModel.contactLabelInput.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Label (opsional)") },
+                    singleLine = true
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.addWhitelistContact() },
+                        modifier = Modifier.testTag("settings_add_whitelist")
+                    ) {
+                        Text("Izinkan")
+                    }
+                    Button(
+                        onClick = { viewModel.addBlacklistContact() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Blokir")
+                    }
+                }
+
+                if (pendingApprovals.isNotEmpty()) {
+                    Text(
+                        text = "Menunggu persetujuan (${pendingApprovals.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    pendingApprovals.forEach { request ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "${request.toolName} • ${request.id}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = request.arguments.take(160),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { viewModel.approveRequest(request.id) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AgentEmerald)
+                                ) {
+                                    Text("Setujui")
+                                }
+                                Button(
+                                    onClick = { viewModel.rejectRequest(request.id) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error
+                                    )
+                                ) {
+                                    Text("Tolak")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (whitelistContacts.isNotEmpty() || blacklistContacts.isNotEmpty()) {
+                    Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    whitelistContacts.forEach { rule ->
+                        ContactRuleRow(
+                            number = rule.contactId,
+                            label = rule.label,
+                            hint = "Whitelist",
+                            onRemove = { viewModel.removeContactRule(rule.contactId) }
+                        )
+                    }
+                    blacklistContacts.forEach { rule ->
+                        ContactRuleRow(
+                            number = rule.contactId,
+                            label = rule.label,
+                            hint = "Blacklist",
+                            onRemove = { viewModel.removeContactRule(rule.contactId) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // 5. Memori Jangka Panjang (Priority 2)
+        SectionHeader(title = "Memori Jangka Panjang", icon = Icons.Default.Psychology)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Memori jangka panjang",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Ingat fakta & pengalaman relevan ke setiap balasan (RAG lokal)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = longTermMemoryEnabled,
+                        onCheckedChange = { viewModel.setLongTermMemoryEnabled(it) }
+                    )
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto compact",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Ringkas riwayat lama otomatis agar konteks tetap ringan",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = autoCompactEnabled,
+                        onCheckedChange = { viewModel.setAutoCompactEnabled(it) }
+                    )
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Batas konteks per percakapan",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                viewModel.setMaxContextMessages(maxContextMessages - 10)
+                            }
+                        ) {
+                            Text("−", fontWeight = FontWeight.Bold)
+                        }
+                        Text(
+                            text = "$maxContextMessages pesan",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        IconButton(
+                            onClick = {
+                                viewModel.setMaxContextMessages(maxContextMessages + 10)
+                            }
+                        ) {
+                            Text("+", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Vision untuk Media (Priority 5)
+        SectionHeader(title = "Vision (Analisis Media)", icon = Icons.Default.Visibility)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = visionBaseUrl,
+                    onValueChange = { viewModel.visionBaseUrl.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Vision Base URL") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = visionApiKey,
+                    onValueChange = { viewModel.visionApiKey.value = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_vision_key"),
+                    label = { Text("Vision API Key") },
+                    singleLine = true,
+                    visualTransformation = if (showVisionKey) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showVisionKey = !showVisionKey }) {
+                            Icon(
+                                imageVector = if (showVisionKey) {
+                                    Icons.Default.VisibilityOff
+                                } else {
+                                    Icons.Default.Visibility
+                                },
+                                contentDescription = "Tampilkan API key"
+                            )
+                        }
+                    }
+                )
+                OutlinedTextField(
+                    value = visionModelId,
+                    onValueChange = { viewModel.visionModelId.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Vision Model ID") },
+                    singleLine = true
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "API Gemini native",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = "Aktifkan bila memakai endpoint generativelanguage.googleapis.com",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = visionGeminiNative,
+                        onCheckedChange = { viewModel.visionGeminiNative.value = it }
+                    )
+                }
+                Button(
+                    onClick = { viewModel.saveVisionSettings() },
+                    modifier = Modifier.testTag("settings_save_vision")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Save,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Simpan Konfigurasi Vision")
+                }
+            }
+        }
+
+        // 7. Developer & Diagnostik
         SectionHeader(title = "Developer & Diagnostik", icon = Icons.Default.BugReport)
 
         Card(
@@ -380,5 +762,36 @@ fun SettingsScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+/** One whitelist/blacklist entry with its remove action. */
+@Composable
+private fun ContactRuleRow(
+    number: String,
+    label: String?,
+    hint: String,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = number,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = "$hint" + (label?.let { " • $it" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        IconButton(onClick = onRemove) {
+            Text("×", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+        }
     }
 }

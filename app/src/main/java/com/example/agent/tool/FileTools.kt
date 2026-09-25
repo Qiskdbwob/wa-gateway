@@ -15,12 +15,14 @@ class ToolInputException(message: String) : Exception(message)
  *
  * Every path argument goes through [Workspace.resolve], so a path outside the workspace is
  * rejected (and reported back to the model as a failed tool result) instead of touching the
- * device filesystem. The tools are `SAFE` precisely because the sandbox is the permission: they
- * can only ever reach files the app itself owns.
+ * device filesystem. Most tools are `SAFE` because the sandbox itself is the permission: they
+ * can only ever reach files the app itself owns. The destructive one ([DeletePathTool]) passes
+ * `CONFIRM` instead, so it is routed through the approval layer (Priority 3).
  */
-abstract class WorkspaceFileTool(protected val workspace: Workspace) : Tool {
-
-    final override val permission: ToolPermission = ToolPermission.SAFE
+abstract class WorkspaceFileTool(
+    protected val workspace: Workspace,
+    override val permission: ToolPermission = ToolPermission.SAFE
+) : Tool {
 
     final override suspend fun execute(input: String): ToolResult = try {
         run(input)
@@ -305,11 +307,13 @@ class CopyPathTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
     }
 }
 
-class DeletePathTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
+class DeletePathTool(workspace: Workspace) :
+    WorkspaceFileTool(workspace, permission = ToolPermission.CONFIRM) {
     override val id: String = "builtin.delete_path"
     override val name: String = "delete_path"
     override val description: String =
-        "Menghapus file atau direktori kosong di workspace. Untuk direktori yang masih berisi, set recursive=true."
+        "Menghapus file atau direktori kosong di workspace. Untuk direktori yang masih berisi, set recursive=true. " +
+            "Tindakan destruktif: pemanggilan ini butuh persetujuan pengguna sebelum dieksekusi."
     override val inputSchema: String = """
         {
           "type": "object",

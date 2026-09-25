@@ -40,6 +40,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -55,6 +56,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.agent.loop.AgentState
+import com.example.agent.storage.entity.AgentTaskEntity
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.theme.AgentEmerald
 import com.example.wagateway.WaGatewayViewModel
@@ -95,6 +97,8 @@ fun TasksScreen(
     val agentLogs by viewModel.agentLogs.collectAsState()
     val modelId by viewModel.agentModelId.collectAsState()
     val sessions by viewModel.sessions.collectAsState()
+    val subAgentTasks by viewModel.subAgentTasks.collectAsState()
+    val scheduledTasks by viewModel.scheduledTasks.collectAsState()
 
     var selectedFilter by remember { mutableStateOf(TaskFilter.ALL) }
     var selectedTask by remember { mutableStateOf<AgentTaskRecord?>(null) }
@@ -105,7 +109,15 @@ fun TasksScreen(
     // Task list is derived ONLY from state that really exists in the app:
     // the live AgentState, the persisted Room sessions and the last real error.
     // No placeholder/dummy tasks are invented here.
-    val tasks = remember(agentState, agentLogs, sessions, agentLastError, modelId) {
+    val tasks = remember(
+        agentState,
+        agentLogs,
+        sessions,
+        agentLastError,
+        modelId,
+        subAgentTasks,
+        scheduledTasks
+    ) {
         val list = mutableListOf<AgentTaskRecord>()
 
         // 1. Live execution: the agent is actively working on a message right now.
@@ -162,7 +174,57 @@ fun TasksScreen(
             }
         }
 
-        // 3. Real failure recorded by the Agent Loop.
+        // 3. Real background subagent runs started by the `delegate_task` tool. The main
+        // agent never waits for these: they appear here while they run, then carry their
+        // actual result/error.
+        subAgentTasks.forEach { sub ->
+            val status = when (sub.status) {
+                AgentTaskEntity.STATUS_QUEUED,
+                AgentTaskEntity.STATUS_RUNNING -> TaskFilter.RUNNING
+                AgentTaskEntity.STATUS_COMPLETED -> TaskFilter.COMPLETED
+                AgentTaskEntity.STATUS_FAILED, AgentTaskEntity.STATUS_CANCELLED -> TaskFilter.FAILED
+                else -> TaskFilter.ALL
+            }
+            list.add(
+                AgentTaskRecord(
+                    id = "sub-${sub.id}",
+                    title = "Sub-agent: ${sub.name}",
+                    prompt = sub.task,
+                    agentName = sub.agentName,
+                    modelId = sub.modelId.ifBlank { "(model utama)" },
+                    tools = if (sub.toolsEnabled) listOf("tools") else emptyList(),
+                    status = status,
+                    timeline = timeFormat.format(
+                        Date(sub.completedAt ?: sub.startedAt ?: sub.createdAt)
+                    ),
+                    result = sub.result,
+                    error = sub.error
+                )
+            )
+        }
+
+        // 4. Real scheduled (cron) tasks from Room, with their last outcome.
+        scheduledTasks.forEach { scheduled ->
+            list.add(
+                AgentTaskRecord(
+                    id = "sched-${scheduled.id}",
+                    title = "Terjadwal: ${scheduled.name}",
+                    prompt = if (scheduled.enabled) {
+                        scheduled.prompt
+                    } else {
+                        "(nonaktif) ${scheduled.prompt}"
+                    },
+                    modelId = modelId.ifBlank { "(model utama)" },
+                    status = TaskFilter.SCHEDULED,
+                    timeline = scheduled.nextRunAt?.let { "Berikutnya " + timeFormat.format(Date(it)) }
+                        ?: "Belum dijadwalkan",
+                    result = scheduled.lastResult,
+                    error = scheduled.lastError
+                )
+            )
+        }
+
+        // 5. Real failure recorded by the Agent Loop.
         if (agentLastError != null) {
             list.add(
                 AgentTaskRecord(
@@ -225,6 +287,70 @@ fun TasksScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        // Scheduled task controls — real Room rows; only shown while that filter is open.
+        if (selectedFilter == TaskFilter.SCHEDULED && scheduledTasks.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                scheduledTasks.forEach { scheduled ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("scheduled_task_${scheduled.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                        border = CardDefaults.outlinedCardBorder().copy(
+                            brush = androidx.compose.ui.graphics.SolidColor(
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                            )
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = scheduled.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "${scheduled.schedule} • ${if (scheduled.enabled) "aktif" else "nonaktif"}" +
+                                    (scheduled.lastStatus?.let { " • terakhir: $it" } ?: ""),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { viewModel.runScheduledTaskNow(scheduled.id) }) {
+                                    Text("Jalankan", style = MaterialTheme.typography.labelSmall)
+                                }
+                                TextButton(
+                                    onClick = {
+                                        viewModel.setScheduledTaskEnabled(scheduled.id, !scheduled.enabled)
+                                    }
+                                ) {
+                                    Text(
+                                        if (scheduled.enabled) "Nonaktifkan" else "Aktifkan",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                                TextButton(onClick = { viewModel.deleteScheduledTask(scheduled.id) }) {
+                                    Text(
+                                        "Hapus",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.Red.copy(alpha = 0.8f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+        }
+
         // Tasks List
         if (filteredTasks.isEmpty()) {
             Box(
@@ -241,7 +367,7 @@ fun TasksScreen(
                     TaskFilter.WAITING ->
                         "Tidak ada task menunggu." to "Permintaan persetujuan akan muncul di sini."
                     TaskFilter.SCHEDULED ->
-                        "Belum ada task terjadwal." to "Penjadwalan task belum tersedia pada versi ini."
+                        "Belum ada task terjadwal." to "Buat jadwal lewat chat, misalnya: \"ingatkan saya tiap jam untuk cek email\"."
                     TaskFilter.COMPLETED ->
                         "Belum ada percakapan selesai." to "Riwayat percakapan akan tampil di sini setelah agent membalas."
                     TaskFilter.FAILED ->

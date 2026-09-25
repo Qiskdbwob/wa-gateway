@@ -62,10 +62,15 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
     private val _messages = MutableStateFlow<List<WaMessage>>(emptyList())
     val messages: StateFlow<List<WaMessage>> = _messages.asStateFlow()
 
+    /** Media messages (image/audio/video/document) received from WhatsApp. */
+    private val _mediaMessages = MutableStateFlow<List<WaMediaMessage>>(emptyList())
+    val mediaMessages: StateFlow<List<WaMediaMessage>> = _mediaMessages.asStateFlow()
+
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
     private val messageListeners = java.util.concurrent.CopyOnWriteArrayList<IncomingMessageListener>()
+    private val mediaListeners = java.util.concurrent.CopyOnWriteArrayList<IncomingMediaListener>()
 
     fun addMessageListener(listener: IncomingMessageListener) {
         messageListeners.add(listener)
@@ -73,6 +78,14 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
 
     fun removeMessageListener(listener: IncomingMessageListener) {
         messageListeners.remove(listener)
+    }
+
+    fun addMediaListener(listener: IncomingMediaListener) {
+        mediaListeners.add(listener)
+    }
+
+    fun removeMediaListener(listener: IncomingMediaListener) {
+        mediaListeners.remove(listener)
     }
 
     init {
@@ -211,6 +224,73 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
             }
         }
 
+    /**
+     * Sends a picture. caption may be empty. Returns the WhatsApp message ID.
+     */
+    suspend fun sendImage(target: String, data: ByteArray, mimetype: String, caption: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            try {
+                val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+                if (!c.isConnected) {
+                    return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
+                }
+                val messageId = c.sendImage(target, data, mimetype, caption)
+                addLog("Image sent to $target (${data.size} B)")
+                Result.success(messageId)
+            } catch (e: Throwable) {
+                addLog("Failed to send image: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    /** Sends a document file. Returns the WhatsApp message ID. */
+    suspend fun sendDocument(target: String, data: ByteArray, mimetype: String, filename: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            try {
+                val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+                if (!c.isConnected) {
+                    return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
+                }
+                val messageId = c.sendDocument(target, data, mimetype, filename)
+                addLog("Document sent to $target (${data.size} B)")
+                Result.success(messageId)
+            } catch (e: Throwable) {
+                addLog("Failed to send document: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    /** Sends an audio clip (voice note when voiceNote = true). Returns the message ID. */
+    suspend fun sendAudio(target: String, data: ByteArray, mimetype: String, voiceNote: Boolean): Result<String> =
+        withContext(Dispatchers.IO) {
+            try {
+                val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+                if (!c.isConnected) {
+                    return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
+                }
+                val messageId = c.sendAudio(target, data, mimetype, voiceNote)
+                addLog("Audio sent to $target (${data.size} B)")
+                Result.success(messageId)
+            } catch (e: Throwable) {
+                addLog("Failed to send audio: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Downloads and decrypts a received media payload (the bytes delivered to
+     * [IncomingMediaListener]). Returns the raw file bytes.
+     */
+    suspend fun downloadMedia(payload: ByteArray): Result<ByteArray> = withContext(Dispatchers.IO) {
+        try {
+            val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+            Result.success(c.downloadMedia(payload))
+        } catch (e: Throwable) {
+            addLog("Failed to download media: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
     /** Sends a read receipt (centang biru) for an incoming message. */
     suspend fun markRead(chat: String, sender: String, messageId: String): Result<Unit> =
         withContext(Dispatchers.IO) {
@@ -343,6 +423,49 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
         }
     }
 
+    override fun onMedia(
+        sender: String,
+        chat: String,
+        isGroup: Boolean,
+        mediaType: String,
+        mimetype: String,
+        caption: String,
+        filename: String,
+        messageId: String,
+        timestamp: Long,
+        payload: ByteArray
+    ) {
+        scope.launch {
+            val media = WaMediaMessage(
+                sender = sender,
+                chat = chat.ifBlank { sender },
+                isGroup = isGroup,
+                mediaType = mediaType,
+                mimetype = mimetype,
+                caption = caption,
+                filename = filename,
+                messageId = messageId,
+                timestamp = timestamp,
+                payload = payload
+            )
+            _mediaMessages.value = listOf(media) + _mediaMessages.value.take(49)
+            addLog("Received $mediaType media from $sender (${payload.size} B protobuf)")
+
+            if (messageId.isNotBlank()) {
+                markRead(media.chat, sender, messageId)
+                    .onFailure { addLog("Read receipt failed for media $messageId: ${it.message}") }
+            }
+
+            for (listener in mediaListeners) {
+                try {
+                    listener(media)
+                } catch (e: Throwable) {
+                    addLog("Error in media listener: ${e.message}")
+                }
+            }
+        }
+    }
+
     companion object {
         @Volatile
         private var instance: WaGatewayManager? = null
@@ -354,6 +477,12 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
         }
     }
 }
+
+/**
+ * Callback contract for incoming WhatsApp media messages (image/audio/video/document).
+ * The payload can be downloaded via [WaGatewayManager.downloadMedia].
+ */
+typealias IncomingMediaListener = (media: WaMediaMessage) -> Unit
 
 /**
  * Callback contract for incoming WhatsApp text messages.

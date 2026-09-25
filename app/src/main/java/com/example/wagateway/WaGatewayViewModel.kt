@@ -9,6 +9,12 @@ import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentSession
 import com.example.agent.model.Tool
+import com.example.agent.storage.ContactAccessRepository
+import com.example.agent.storage.entity.AgentTaskEntity
+import com.example.agent.storage.entity.ApprovalRequestEntity
+import com.example.agent.storage.entity.ContactRuleEntity
+import com.example.agent.storage.entity.MemoryItemEntity
+import com.example.agent.storage.entity.ScheduledTaskEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -69,6 +75,157 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     val agentModelId = MutableStateFlow(agentBridge.providerConfig.value.modelId)
     val useEchoFallback: StateFlow<Boolean> = agentBridge.useEchoFallback
 
+    // ==================================================================================
+    // Priority 1 — contact access control (whitelist / blacklist)
+    // ==================================================================================
+    val whitelistMode: StateFlow<Boolean> = agentBridge.whitelistMode
+
+    val whitelistContacts: StateFlow<List<ContactRuleEntity>> = agentBridge.contactAccess.whitelistFlow()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val blacklistContacts: StateFlow<List<ContactRuleEntity>> = agentBridge.contactAccess.blacklistFlow()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val contactNumberInput = MutableStateFlow("")
+    val contactLabelInput = MutableStateFlow("")
+
+    fun setWhitelistMode(enabled: Boolean) = agentBridge.setWhitelistMode(enabled)
+
+    fun addWhitelistContact() = addContactRule(ContactRuleEntity.MODE_ALLOW)
+
+    fun addBlacklistContact() = addContactRule(ContactRuleEntity.MODE_BLOCK)
+
+    private fun addContactRule(mode: String) {
+        val number = ContactAccessRepository.normalizePhone(contactNumberInput.value)
+        if (number.length < 6) {
+            _sendFeedback.value = "Nomor tidak valid. Gunakan format internasional, contoh 628123456789."
+            return
+        }
+        val label = contactLabelInput.value.trim().ifBlank { null }
+        if (mode == ContactRuleEntity.MODE_ALLOW) {
+            agentBridge.allowContact(number, label)
+            _sendFeedback.value = "$number ditambahkan ke whitelist."
+        } else {
+            agentBridge.blockContact(number, label)
+            _sendFeedback.value = "$number diblokir dari agent."
+        }
+        contactNumberInput.value = ""
+        contactLabelInput.value = ""
+    }
+
+    fun removeContactRule(contactId: String) {
+        agentBridge.removeContactRule(contactId)
+        _sendFeedback.value = "$contactId dihapus dari daftar."
+    }
+
+    // ==================================================================================
+    // Priority 2 — long-term memory (episodic / knowledge / learning)
+    // ==================================================================================
+    val longTermMemoryEnabled: StateFlow<Boolean> = agentBridge.longTermMemoryEnabled
+    val autoCompactEnabled: StateFlow<Boolean> = agentBridge.autoCompactEnabled
+    val maxContextMessages: StateFlow<Int> = agentBridge.maxContextMessages
+
+    val episodicMemories: StateFlow<List<MemoryItemEntity>> = agentBridge.memoryRepository
+        .getByTypeFlow(MemoryItemEntity.TYPE_EPISODIC)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val knowledgeMemories: StateFlow<List<MemoryItemEntity>> = agentBridge.memoryRepository
+        .getByTypeFlow(MemoryItemEntity.TYPE_KNOWLEDGE)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val learnings: StateFlow<List<MemoryItemEntity>> = agentBridge.memoryRepository
+        .getByTypeFlow(MemoryItemEntity.TYPE_LEARNING)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val newMemoryInput = MutableStateFlow("")
+
+    fun setLongTermMemoryEnabled(enabled: Boolean) = agentBridge.setLongTermMemoryEnabled(enabled)
+
+    fun setAutoCompactEnabled(enabled: Boolean) = agentBridge.setAutoCompactEnabled(enabled)
+
+    fun setMaxContextMessages(count: Int) = agentBridge.setMaxContextMessages(count)
+
+    fun saveMemory() {
+        val content = newMemoryInput.value.trim()
+        if (content.isEmpty()) {
+            _sendFeedback.value = "Isi memori masih kosong."
+            return
+        }
+        agentBridge.rememberManually(content)
+        newMemoryInput.value = ""
+        _sendFeedback.value = "Memori tersimpan."
+    }
+
+    fun deleteMemory(id: String) = agentBridge.deleteMemory(id)
+
+    fun promoteLearning(id: String) = agentBridge.promoteLearning(id)
+
+    fun rejectLearning(id: String) = agentBridge.rejectLearning(id)
+
+    // ==================================================================================
+    // Priority 3 — approvals for destructive tools
+    // ==================================================================================
+    val approvalEnabled: StateFlow<Boolean> = agentBridge.approvalEnabled
+
+    val pendingApprovals: StateFlow<List<ApprovalRequestEntity>> = agentBridge.pendingApprovals
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun setApprovalEnabled(enabled: Boolean) = agentBridge.setApprovalEnabled(enabled)
+
+    fun approveRequest(id: String) {
+        viewModelScope.launch {
+            _sendFeedback.value = agentBridge.resolveApproval(id, approved = true)
+        }
+    }
+
+    fun rejectRequest(id: String) {
+        viewModelScope.launch {
+            _sendFeedback.value = agentBridge.resolveApproval(id, approved = false)
+        }
+    }
+
+    // ==================================================================================
+    // Priorities 4 & 6 — scheduled tasks and background subagents
+    // ==================================================================================
+    val subAgentTasks: StateFlow<List<AgentTaskEntity>> = agentBridge.subAgentTasksFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val scheduledTasks: StateFlow<List<ScheduledTaskEntity>> = agentBridge.scheduledTasksFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun runScheduledTaskNow(id: String) = agentBridge.runScheduledTaskNow(id)
+
+    fun setScheduledTaskEnabled(id: String, enabled: Boolean) =
+        agentBridge.setScheduledTaskEnabled(id, enabled)
+
+    fun deleteScheduledTask(id: String) = agentBridge.deleteScheduledTask(id)
+
+    // ==================================================================================
+    // Priority 5 — vision subagent configuration
+    // ==================================================================================
+    val visionBaseUrl = MutableStateFlow(agentBridge.visionConfig.value.baseUrl)
+    val visionApiKey = MutableStateFlow(agentBridge.visionConfig.value.apiKey)
+    val visionModelId = MutableStateFlow(agentBridge.visionConfig.value.modelId)
+    val visionGeminiNative = MutableStateFlow(agentBridge.visionConfig.value.isGeminiNative)
+
+    fun saveVisionSettings() {
+        agentBridge.setVisionConfig(
+            baseUrl = visionBaseUrl.value,
+            apiKey = visionApiKey.value,
+            modelId = visionModelId.value,
+            geminiNative = visionGeminiNative.value
+        )
+        _sendFeedback.value = "Konfigurasi vision tersimpan."
+    }
+
     // Phase 2: Session & Persistence
     val sessions: StateFlow<List<AgentSession>> = agentBridge.sessionRepository.getAllSessionsFlow()
         .stateIn(
@@ -113,6 +270,14 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             agentBridge.systemPrompt.collect { prompt ->
                 agentSystemPrompt.value = prompt
+            }
+        }
+        viewModelScope.launch {
+            agentBridge.visionConfig.collect { vision ->
+                visionBaseUrl.value = vision.baseUrl
+                visionApiKey.value = vision.apiKey
+                visionModelId.value = vision.modelId
+                visionGeminiNative.value = vision.isGeminiNative
             }
         }
     }
