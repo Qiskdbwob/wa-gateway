@@ -20,7 +20,7 @@ import com.example.agent.storage.entity.MemoryItemEntity
  *   /blacklist add|del <no> [label]
  *   /whitelist on|off              — mode whitelist global (hanya nomor tertentu bisa akses)
  *   /approve <id> / /reject <id>   — setujui/tolak tool destruktif yang pending
- *   /compact [force]               — ringkas riwayat percakapan ini
+ *   /compact                       — ringkas riwayat percakapan ini
  *   /remember <teks>               — simpan fakta ke memori jangka panjang
  *   /learning [approve|reject <id>]— kelola kandidat pembelajaran
  *   /status                        — ringkasan status agent
@@ -37,7 +37,9 @@ class ChatCommandHandler(
     /** Executes an approved destructive tool call and returns the human-readable result. */
     private val executeApprovedTool: suspend (toolName: String, arguments: String, conversationId: String) -> String,
     /** Compact needs a provider; the bridge resolves the current one lazily. */
-    private val resolveProvider: () -> Pair<ModelProvider, String?>?
+    private val resolveProvider: () -> Pair<ModelProvider, String?>?,
+    /** Live context bound from settings, so /compact honours the configured value. */
+    private val maxContextMessages: () -> Int = { 30 }
 ) {
 
     sealed class Result {
@@ -65,7 +67,7 @@ class ChatCommandHandler(
 
             "reject" -> handleApproval(parts.getOrNull(1), conversationId, approved = false)
 
-            "compact" -> handleCompact(sessionId, conversationId, force = parts.size > 1)
+            "compact" -> handleCompact(sessionId, conversationId)
 
             "remember" -> {
                 val content = trimmed.removePrefix("/remember").trim()
@@ -193,15 +195,17 @@ class ChatCommandHandler(
         return Result.Handled("✅ ${request.toolName} disetujui & dijalankan:\n$output")
     }
 
-    private suspend fun handleCompact(sessionId: String?, conversationId: String, force: Boolean): Result {
+    private suspend fun handleCompact(sessionId: String?, conversationId: String): Result {
         if (sessionId == null) {
             return Result.Handled("Belum ada percakapan aktif untuk diringkas.")
         }
         val providerPair = resolveProvider()
+        // An explicit /compact always runs (force = true); the CompactManager keeps the
+        // guard that a conversation too short to summarize is left alone.
         val result = compact.compactIfNeeded(
             sessionId = sessionId,
             conversationId = conversationId,
-            maxMessages = 30,
+            maxMessages = maxContextMessages(),
             force = true,
             provider = providerPair?.first,
             modelId = providerPair?.second

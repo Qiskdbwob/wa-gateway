@@ -545,7 +545,8 @@ class WhatsAppAgentBridge private constructor(
         executeApprovedTool = { toolName, arguments, conversationId ->
             executeApprovedToolCall(toolName, arguments, conversationId)
         },
-        resolveProvider = { resolveProviderPair() }
+        resolveProvider = { resolveProviderPair() },
+        maxContextMessages = { _maxContextMessages.value }
     )
 
     /**

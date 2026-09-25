@@ -351,7 +351,8 @@ class Priority3To6AgentFeaturesTest {
                 executed.add("$tool:$arguments")
                 "dijalankan di $conversation"
             },
-            resolveProvider = { null }
+            resolveProvider = { null },
+            maxContextMessages = { 30 }
         )
     }
 
