@@ -365,7 +365,7 @@ class AgentLoop(
 
                                     val tool = toolRegistry?.get(call.name)
                                     val toolStart = System.currentTimeMillis()
-                                    val toolResult = if (tool == null) {
+                                    val toolResult: ToolResult = if (tool == null) {
                                         log("TOOL_ERROR", "Tool '${call.name}' tidak terdaftar di Tool Registry.")
                                         ToolResult(
                                             success = false,
@@ -373,7 +373,64 @@ class AgentLoop(
                                             error = "Tool '${call.name}' tidak tersedia pada agent ini."
                                         )
                                     } else {
-                                        runTool(tool, call, input, session.sessionId)
+                                        try {
+                                            // Phase 9 — tools whose permission is CONFIRM must be
+                                            // approved before they run. SAFE tools (the read-only
+                                            // file/terminal tools) are never blocked here.
+                                            if (!approval.isAllowed(tool.permission)) {
+                                                val request = ApprovalRequest(
+                                                    toolName = tool.name,
+                                                    permission = tool.permission,
+                                                    reason = toolPermissionReason(tool),
+                                                    conversationId = input.conversationId
+                                                )
+                                                _state.value = AgentState.WAITING_APPROVAL
+                                                emitProgress("⏳ Menunggu persetujuan untuk ${tool.name}...")
+                                                log("TOOL_APPROVAL_REQUESTED", "tool=${tool.name}, permission=${tool.permission}")
+                                                val decision = approval.requestApproval(request)
+                                                _state.value = AgentState.CALLING_TOOL
+                                                when (decision) {
+                                                    ApprovalDecision.Approved -> {
+                                                        log("TOOL_APPROVAL_GRANTED", "tool=${tool.name}")
+                                                    }
+                                                    ApprovalDecision.Denied -> {
+                                                        log("TOOL_APPROVAL_DENIED", "tool=${tool.name}")
+                                                        return@try ToolResult(
+                                                            success = false,
+                                                            output = "",
+                                                            error = "Penggunaan tool '${tool.name}' ditolak."
+                                                        )
+                                                    }
+                                                    ApprovalDecision.Unavailable -> {
+                                                        log("TOOL_APPROVAL_UNAVAILABLE", "tool=${tool.name}, falling back to policy")
+                                                        return@try ToolResult(
+                                                            success = false,
+                                                            output = "",
+                                                            error = "Persetujuan tidak tersedia untuk ${tool.name}."
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            val executionContext = ToolExecutionContext(
+                                                agentId = agent.id,
+                                                sessionId = session.sessionId,
+                                                conversationId = input.conversationId,
+                                                channel = input.channel,
+                                                metadata = input.metadata
+                                            )
+                                            if (tool is ContextAwareTool) {
+                                                tool.execute(call.arguments, executionContext)
+                                            } else {
+                                                tool.execute(call.arguments)
+                                            }
+                                        } catch (e: Exception) {
+                                            log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
+                                            ToolResult(
+                                                success = false,
+                                                output = "",
+                                                error = "Tool '${call.name}' gagal: ${e.message}"
+                                            )
+                                        }
                                     }
                                     val toolLatencyMs = System.currentTimeMillis() - toolStart
 
@@ -633,69 +690,6 @@ class AgentLoop(
      * JSON) so every OpenAI-compatible endpoint can read it, and truncated so one chatty tool
      * cannot flood the context window.
      */
-    /**
-     * Phase 9 — runs a single tool call, consulting the approval layer first for CONFIRM tools.
-     * SAFE tools (read-only file/terminal tools) are never blocked. Returns the tool result,
-     * including a synthetic failure when the call itself throws.
-     */
-    private suspend fun runTool(
-        tool: com.example.agent.model.Tool,
-        call: ToolCall,
-        input: AgentInput,
-        sessionId: String
-    ): ToolResult {
-        return try {
-            if (!approval.isAllowed(tool.permission)) {
-                val request = ApprovalRequest(
-                    toolName = tool.name,
-                    permission = tool.permission,
-                    reason = toolPermissionReason(tool),
-                    conversationId = input.conversationId
-                )
-                _state.value = AgentState.WAITING_APPROVAL
-                emitProgress("⏳ Menunggu persetujuan untuk ${tool.name}...")
-                log("TOOL_APPROVAL_REQUESTED", "tool=${tool.name}, permission=${tool.permission}")
-                val decision = approval.requestApproval(request)
-                _state.value = AgentState.CALLING_TOOL
-                when (decision) {
-                    ApprovalDecision.Approved -> {
-                        log("TOOL_APPROVAL_GRANTED", "tool=${tool.name}")
-                    }
-                    ApprovalDecision.Denied -> {
-                        log("TOOL_APPROVAL_DENIED", "tool=${tool.name}")
-                        return ToolResult(
-                            success = false,
-                            output = "",
-                            error = "Penggunaan tool '${tool.name}' ditolak."
-                        )
-                    }
-                    ApprovalDecision.Unavailable -> {
-                        log("TOOL_APPROVAL_UNAVAILABLE", "tool=${tool.name}, falling back to policy")
-                    }
-                }
-            }
-            val executionContext = ToolExecutionContext(
-                agentId = agent.id,
-                sessionId = sessionId,
-                conversationId = input.conversationId,
-                channel = input.channel,
-                metadata = input.metadata
-            )
-            if (tool is ContextAwareTool) {
-                tool.execute(call.arguments, executionContext)
-            } else {
-                tool.execute(call.arguments)
-            }
-        } catch (e: Exception) {
-            log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
-            ToolResult(
-                success = false,
-                output = "",
-                error = "Tool '${call.name}' gagal: ${e.message}"
-            )
-        }
-    }
-
     /** Human-readable reason surfaced to the user when a CONFIRM tool awaits approval. */
     private fun toolPermissionReason(tool: com.example.agent.model.Tool): String = when (tool.permission) {
         com.example.agent.model.ToolPermission.SAFE -> "aman (read-only)"
