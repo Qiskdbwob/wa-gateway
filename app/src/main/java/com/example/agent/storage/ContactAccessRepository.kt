@@ -63,10 +63,11 @@ class ContactAccessRepository(private val dao: ContactRuleDao) {
             if (trimmed.isEmpty()) return ""
             // Group JIDs keep their id so a group can be allowed/blocked as one entry.
             if (trimmed.endsWith("@g.us")) return trimmed.substringBefore('@')
-            val at = trimmed.indexOf('@')
-            val noJid = if (at > 0) trimmed.substring(0, at) else trimmed
-            // Drop the device part of AD JIDs ("62812.0:34" -> "62812034" digits anyway).
-            return noJid.filter { it.isDigit() }
+            val noJid = trimmed.substringBefore('@')
+            // AD JIDs carry a device suffix ("62812:34", "62812.0:34"); only the user part
+            // before it is the phone number, so those digits must not be appended.
+            val userPart = noJid.substringBefore(':').substringBefore('.')
+            return userPart.filter { it.isDigit() }
         }
     }
 }

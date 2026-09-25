@@ -73,7 +73,9 @@ class Priority1AccessControlTest {
     @Test
     fun priority1_numbersAreNormalizedSoEveryJidFormMatches() {
         assertEquals("628123456789", ContactAccessRepository.normalizePhone("+62812-3456-789"))
-        assertEquals("6281234567890", ContactAccessRepository.normalizePhone("62812.0:34@s.whatsapp.net"))
+        // Device suffixes of AD JIDs are dropped, not appended to the number.
+        assertEquals("6281234567890", ContactAccessRepository.normalizePhone("6281234567890:34@s.whatsapp.net"))
+        assertEquals("6281234567890", ContactAccessRepository.normalizePhone("6281234567890.0:34@s.whatsapp.net"))
         assertEquals("628123456789", ContactAccessRepository.normalizePhone("628123456789@c.us"))
         // Groups keep their id (without the server suffix) so a whole group can be blocked.
         assertEquals("120363012345", ContactAccessRepository.normalizePhone("120363012345@g.us"))
