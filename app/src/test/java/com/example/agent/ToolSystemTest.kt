@@ -18,6 +18,9 @@ import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.storage.InMemoryAgentSessionRepository
+import com.example.agent.tool.ApprovalDecision
+import com.example.agent.tool.ApprovalGate
+import com.example.agent.tool.ApprovalRequest
 import com.example.agent.tool.CurrentTimeTool
 import com.example.agent.tool.ToolRegistry
 import kotlinx.coroutines.runBlocking
@@ -386,5 +389,188 @@ class ToolSystemTest {
         assertTrue(result.isSuccess)
         assertTrue(provider.requests.single().tools.isEmpty())
         assertFalse(loop.activityLogs.value.any { it.contains("TOOL_CALLS_REQUESTED") })
+    }
+
+    // ==========================================
+    // Phase 9 — approval layer
+    // ==========================================
+
+    @Test
+    fun phase9_test1_safeToolsRunWithoutApprovalAndConfirmToolsAreBlockedUntilGranted() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        val gate = ApprovalGate(timeoutMs = 5_000L)
+
+        // A CONFIRM tool that records whether it actually executed.
+        var executed = false
+        val confirmTool = object : Tool {
+            override val id: String = "builtin.dangerous"
+            override val name: String = "dangerous_thing"
+            override val description: String = "Menghapus sesuatu"
+            override val inputSchema: String = """{"type":"object","properties":{}}"""
+            override val permission: ToolPermission = ToolPermission.CONFIRM
+            override suspend fun execute(input: String): ToolResult {
+                executed = true
+                return ToolResult(success = true, output = "dijalankan")
+            }
+        }
+
+        // SAFE tool: must run immediately, no approval needed.
+        val safeTool = object : Tool {
+            override val id: String = "builtin.safe"
+            override val name: String = "safe_thing"
+            override val description: String = "Membaca sesuatu"
+            override val inputSchema: String = """{"type":"object","properties":{}}"""
+            override val permission: ToolPermission = ToolPermission.SAFE
+            override suspend fun execute(input: String): ToolResult =
+                ToolResult(success = true, output = "aman")
+        }
+
+        val provider = ScriptedProvider { request, callCount ->
+            if (callCount == 1) {
+                Result.success(
+                    toolCallAnswer(
+                        ToolCall(id = "call-safe", name = "safe_thing", arguments = "{}"),
+                        request = request
+                    )
+                )
+            } else if (callCount == 2) {
+                Result.success(
+                    toolCallAnswer(
+                        ToolCall(id = "call-danger", name = "dangerous_thing", arguments = "{}"),
+                        request = request
+                    )
+                )
+            } else {
+                Result.success(textAnswer("selesai", request))
+            }
+        }
+
+        val loop = AgentLoop(
+            agent = Agent(enabled = true, maxToolIterations = 5),
+            modelProvider = provider,
+            sessionRepository = repo,
+            toolRegistry = ToolRegistry(listOf(safeTool, confirmTool)),
+            approval = gate
+        )
+
+        // Drive the loop in a coroutine so we can grant approval from the test thread.
+        val deferred = kotlinx.coroutines.async(kotlinx.coroutines.Dispatchers.IO) {
+            loop.processMessage("conv-approval", "coba")
+        }
+
+        // SAFE tool runs without approval.
+        kotlinx.coroutines.delay(500)
+        assertTrue(executed) // safe_thing ran
+        executed = false
+
+        // CONFIRM tool is now requested: loop should be WAITING_APPROVAL and tool not yet run.
+        kotlinx.coroutines.delay(500)
+        assertEquals(AgentState.WAITING_APPROVAL, loop.state.value)
+        assertNotNull(gate.pending.value) // the CONFIRM tool is awaiting a human decision
+        assertFalse(executed)
+        assertTrue(loop.activityLogs.value.any { it.contains("TOOL_APPROVAL_REQUESTED") })
+
+        // Grant approval -> tool runs, loop completes.
+        gate.grant()
+        val result = deferred.await()
+        assertTrue(result.isSuccess)
+        assertTrue(executed)
+        assertTrue(loop.activityLogs.value.any { it.contains("TOOL_APPROVAL_GRANTED") })
+    }
+
+    @Test
+    fun phase9_test2_deniedConfirmToolIsReportedAsFailedResultWithoutRunning() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        val gate = ApprovalGate(timeoutMs = 5_000L)
+        var executed = false
+        val confirmTool = object : Tool {
+            override val id: String = "builtin.dangerous"
+            override val name: String = "dangerous_thing"
+            override val description: String = "Menghapus sesuatu"
+            override val inputSchema: String = """{"type":"object","properties":{}}"""
+            override val permission: ToolPermission = ToolPermission.CONFIRM
+            override suspend fun execute(input: String): ToolResult {
+                executed = true
+                return ToolResult(success = true, output = "dijalankan")
+            }
+        }
+
+        val provider = ScriptedProvider { request, callCount ->
+            if (callCount == 1) {
+                Result.success(
+                    toolCallAnswer(
+                        ToolCall(id = "call-danger", name = "dangerous_thing", arguments = "{}"),
+                        request = request
+                    )
+                )
+            } else {
+                Result.success(textAnswer("selesai", request))
+            }
+        }
+
+        val loop = AgentLoop(
+            agent = Agent(enabled = true, maxToolIterations = 5),
+            modelProvider = provider,
+            sessionRepository = repo,
+            toolRegistry = ToolRegistry(listOf(confirmTool)),
+            approval = gate
+        )
+
+        val deferred = kotlinx.coroutines.async(kotlinx.coroutines.Dispatchers.IO) {
+            loop.processMessage("conv-deny", "hapus")
+        }
+
+        kotlinx.coroutines.delay(500)
+        assertEquals(AgentState.WAITING_APPROVAL, loop.state.value)
+        assertFalse(executed)
+
+        gate.deny()
+        val result = deferred.await()
+        assertTrue(result.isSuccess)
+        assertFalse(executed)
+        assertTrue(loop.activityLogs.value.any { it.contains("TOOL_APPROVAL_DENIED") })
+    }
+
+    @Test
+    fun phase9_test3_autoApproveAllNeverBlocks() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        var executed = false
+        val confirmTool = object : Tool {
+            override val id: String = "builtin.dangerous"
+            override val name: String = "dangerous_thing"
+            override val description: String = "Menghapus sesuatu"
+            override val inputSchema: String = """{"type":"object","properties":{}}"""
+            override val permission: ToolPermission = ToolPermission.CONFIRM
+            override suspend fun execute(input: String): ToolResult {
+                executed = true
+                return ToolResult(success = true, output = "dijalankan")
+            }
+        }
+
+        val provider = ScriptedProvider { request, callCount ->
+            if (callCount == 1) {
+                Result.success(
+                    toolCallAnswer(
+                        ToolCall(id = "call-danger", name = "dangerous_thing", arguments = "{}"),
+                        request = request
+                    )
+                )
+            } else {
+                Result.success(textAnswer("selesai", request))
+            }
+        }
+
+        val loop = AgentLoop(
+            agent = Agent(enabled = true, maxToolIterations = 5),
+            modelProvider = provider,
+            sessionRepository = repo,
+            toolRegistry = ToolRegistry(listOf(confirmTool)),
+            approval = com.example.agent.tool.AutoApproveAll
+        )
+
+        val result = loop.processMessage("conv-auto", "hapus")
+        assertTrue(result.isSuccess)
+        assertTrue(executed)
+        assertFalse(loop.activityLogs.value.any { it.contains("TOOL_APPROVAL_REQUESTED") })
     }
 }

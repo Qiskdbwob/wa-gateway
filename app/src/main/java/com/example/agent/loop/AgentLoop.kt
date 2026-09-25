@@ -14,7 +14,11 @@ import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.storage.AgentSessionRepository
+import com.example.agent.tool.ApprovalDecision
+import com.example.agent.tool.ApprovalRequest
+import com.example.agent.tool.AutoApproveAll
 import com.example.agent.tool.ContextAwareTool
+import com.example.agent.tool.ToolApproval
 import com.example.agent.tool.ToolExecutionContext
 import com.example.agent.tool.ToolRegistry
 import kotlinx.coroutines.delay
@@ -81,7 +85,13 @@ class AgentLoop(
      * Phase 6 — tools the loop may look up by name. A null or empty registry simply means the
      * model is asked to answer without tools; the loop never references a concrete tool.
      */
-    var toolRegistry: ToolRegistry? = null
+    var toolRegistry: ToolRegistry? = null,
+    /**
+     * Phase 9 — approval layer for tools whose permission is CONFIRM. Defaults to
+     * [AutoApproveAll] so the loop never blocks when no interactive surface is wired up;
+     * the WhatsApp bridge can swap in an [ApprovalGate] to require human confirmation.
+     */
+    var approval: ToolApproval = AutoApproveAll
 ) {
     var modelProvider: ModelProvider = modelProvider
         set(value) {
@@ -355,7 +365,8 @@ class AgentLoop(
 
                                     val tool = toolRegistry?.get(call.name)
                                     val toolStart = System.currentTimeMillis()
-                                    val toolResult = if (tool == null) {
+                                    var toolResult: ToolResult? = null
+                                    toolResult = if (tool == null) {
                                         log("TOOL_ERROR", "Tool '${call.name}' tidak terdaftar di Tool Registry.")
                                         ToolResult(
                                             success = false,
@@ -364,21 +375,58 @@ class AgentLoop(
                                         )
                                     } else {
                                         try {
-                                            val executionContext = ToolExecutionContext(
-                                                agentId = agent.id,
-                                                sessionId = session.sessionId,
-                                                conversationId = input.conversationId,
-                                                channel = input.channel,
-                                                metadata = input.metadata
-                                            )
-                                            if (tool is ContextAwareTool) {
-                                                tool.execute(call.arguments, executionContext)
-                                            } else {
-                                                tool.execute(call.arguments)
+                                            // Phase 9 — tools whose permission is CONFIRM must be
+                                            // approved before they run. SAFE tools (the read-only
+                                            // file/terminal tools) are never blocked here.
+                                            if (!approval.isAllowed(tool.permission)) {
+                                                val request = ApprovalRequest(
+                                                    toolName = tool.name,
+                                                    permission = tool.permission,
+                                                    reason = toolPermissionReason(tool),
+                                                    conversationId = input.conversationId
+                                                )
+                                                _state.value = AgentState.WAITING_APPROVAL
+                                                emitProgress("⏳ Menunggu persetujuan untuk ${tool.name}...")
+                                                log("TOOL_APPROVAL_REQUESTED", "tool=${tool.name}, permission=${tool.permission}")
+                                                val decision = approval.requestApproval(request)
+                                                _state.value = AgentState.CALLING_TOOL
+                                                when (decision) {
+                                                    ApprovalDecision.Approved -> {
+                                                        log("TOOL_APPROVAL_GRANTED", "tool=${tool.name}")
+                                                    }
+                                                    ApprovalDecision.Denied -> {
+                                                        log("TOOL_APPROVAL_DENIED", "tool=${tool.name}")
+                                                        val denied = ToolResult(
+                                                            success = false,
+                                                            output = "",
+                                                            error = "Penggunaan tool '${tool.name}' ditolak."
+                                                        )
+                                                        toolResult = denied
+                                                        // skip execution below
+                                                    }
+                                                    ApprovalDecision.Unavailable -> {
+                                                        log("TOOL_APPROVAL_UNAVAILABLE", "tool=${tool.name}, falling back to policy")
+                                                    }
+                                                }
                                             }
+                                            if (toolResult == null) {
+                                                val executionContext = ToolExecutionContext(
+                                                    agentId = agent.id,
+                                                    sessionId = session.sessionId,
+                                                    conversationId = input.conversationId,
+                                                    channel = input.channel,
+                                                    metadata = input.metadata
+                                                )
+                                                if (tool is ContextAwareTool) {
+                                                    tool.execute(call.arguments, executionContext)
+                                                } else {
+                                                    tool.execute(call.arguments)
+                                                }
+                                            }
+                                            toolResult
                                         } catch (e: Exception) {
                                             log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
-                                            ToolResult(
+                                            toolResult = ToolResult(
                                                 success = false,
                                                 output = "",
                                                 error = "Tool '${call.name}' gagal: ${e.message}"
@@ -643,6 +691,12 @@ class AgentLoop(
      * JSON) so every OpenAI-compatible endpoint can read it, and truncated so one chatty tool
      * cannot flood the context window.
      */
+    /** Human-readable reason surfaced to the user when a CONFIRM tool awaits approval. */
+    private fun toolPermissionReason(tool: com.example.agent.model.Tool): String = when (tool.permission) {
+        com.example.agent.model.ToolPermission.SAFE -> "aman (read-only)"
+        com.example.agent.model.ToolPermission.CONFIRM -> "membutuhkan konfirmasi: aksi yang dapat mengubah state"
+    }
+
     private fun describeToolResult(toolName: String, result: ToolResult): String {
         val status = if (result.success) "sukses" else "gagal"
         val body = result.output.ifBlank { result.error ?: "(tanpa keluaran)" }

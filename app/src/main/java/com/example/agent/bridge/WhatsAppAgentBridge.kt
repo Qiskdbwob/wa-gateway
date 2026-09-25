@@ -18,6 +18,7 @@ import com.example.agent.storage.RoomAgentSessionRepository
 import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
+import com.example.agent.tool.ApprovalGate
 import com.example.agent.tool.ToolRegistry
 import com.example.agent.workspace.Workspace
 import com.example.wagateway.OutgoingMessageSender
@@ -130,6 +131,15 @@ class WhatsAppAgentBridge private constructor(
      */
     val toolRegistry: ToolRegistry = ToolRegistry.withBuiltIns(workspace)
 
+    /**
+     * Phase 9 — approval layer. Wired into the Agent Loop so any future CONFIRM tool
+     * (e.g. a mutating terminal command) pauses the turn until the user approves. Exposes
+     * [pendingApprovals] so the UI can render a confirmation prompt. Currently every built-in
+     * tool is SAFE, so this never blocks.
+     */
+    val approvalGate: ApprovalGate = ApprovalGate()
+    val pendingApprovals = approvalGate.pending
+
     val agentLoop = AgentLoop(
         agent = Agent(
             systemPrompt = systemPrompt.value,
@@ -138,7 +148,8 @@ class WhatsAppAgentBridge private constructor(
         modelProvider = openAiProvider,
         sessionRepository = sessionRepository,
         modelRouter = modelRouter,
-        toolRegistry = toolRegistry
+        toolRegistry = toolRegistry,
+        approval = approvalGate
     )
 
     private val _isAutoReplyEnabled = MutableStateFlow(false)
