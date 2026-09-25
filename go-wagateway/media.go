@@ -162,7 +162,7 @@ func (c *Client) SendAudio(target string, data []byte, mimetype string, voiceNot
 			FileSHA256:    resp.FileSHA256,
 			FileLength:    &resp.FileLength,
 			Mimetype:      proto.String(mimetype),
-			Ptt:           proto.Bool(voiceNote),
+			PTT:           proto.Bool(voiceNote),
 		},
 	}
 
