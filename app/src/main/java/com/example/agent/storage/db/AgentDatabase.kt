@@ -34,7 +34,7 @@ import com.example.agent.storage.entity.ScheduledTaskEntity
         ScheduledTaskEntity::class,
         AgentTaskEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AgentDatabase : RoomDatabase() {
@@ -124,6 +124,19 @@ abstract class AgentDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v2 -> v3: terminal + browser automation settings. All columns carry defaults so
+         * existing installations keep working (browser stays off until the user enables it).
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `terminalEnabled` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `browserEnabled` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `browserSites` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `browserUserAgent` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): AgentDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -131,7 +144,7 @@ abstract class AgentDatabase : RoomDatabase() {
                     AgentDatabase::class.java,
                     "agent_database.db"
                 )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { INSTANCE = it }
             }

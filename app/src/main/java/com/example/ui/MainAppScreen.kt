@@ -32,9 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.ui.browser.BrowserScreen
 import com.example.ui.chat.ChatScreen
 import com.example.ui.debug.DeveloperDebugScreen
 import com.example.ui.gateway.WhatsAppGatewayScreen
+import com.example.ui.terminal.TerminalScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.memory.MemoryScreen
 import com.example.ui.navigation.MainTab
@@ -68,6 +70,18 @@ fun MainAppScreen(
         )
     } else if (currentSubScreen == SubScreen.DeveloperDebug) {
         DeveloperDebugScreen(
+            viewModel = viewModel,
+            onNavigateBack = { currentSubScreen = SubScreen.None },
+            modifier = modifier
+        )
+    } else if (currentSubScreen == SubScreen.Terminal) {
+        TerminalScreen(
+            viewModel = viewModel,
+            onNavigateBack = { currentSubScreen = SubScreen.None },
+            modifier = modifier
+        )
+    } else if (currentSubScreen == SubScreen.Browser) {
+        BrowserScreen(
             viewModel = viewModel,
             onNavigateBack = { currentSubScreen = SubScreen.None },
             modifier = modifier
@@ -149,7 +163,9 @@ fun MainAppScreen(
                         SettingsScreen(
                             viewModel = viewModel,
                             onNavigateToGateway = { currentSubScreen = SubScreen.Gateway },
-                            onNavigateToDebug = { currentSubScreen = SubScreen.DeveloperDebug }
+                            onNavigateToDebug = { currentSubScreen = SubScreen.DeveloperDebug },
+                            onNavigateToTerminal = { currentSubScreen = SubScreen.Terminal },
+                            onNavigateToBrowser = { currentSubScreen = SubScreen.Browser }
                         )
                     }
                 }

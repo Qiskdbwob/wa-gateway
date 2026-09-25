@@ -73,7 +73,11 @@ antar kontak tidak pernah tercampur.
 | Council 2 debater + moderator, self-reflection (`reflect`) & learning pipeline | ✅ |
 | Task/job system: scheduler interval + UI Tugas (Scheduled/Sub-agent) | ✅ |
 | Web search & web fetch (read-only, AUTO_SAFE) | ✅ |
-| Terminal, MCP, browser automation, Linux sandbox | ❌ (dokumen referensi ada di `DOC/reference/`) |
+| Terminal bawaan: agent menjalankan `curl`/`wget`/skrip bash-python + shell interaktif di app | ✅ (shell perangkat `/system/bin/sh`; perintah destruktif = approval) |
+| Browser automation: buka halaman, isi form, submit, screenshot, sesi login tersimpan | ✅ (engine Android WebView di balik `BrowserEngine`; GeckoView dapat ditukar) |
+| Serah terima captcha / 2FA ke pengguna (agent menunggu, tidak mengarang hasil) | ✅ |
+| Kirim file hasil agent ke chat WhatsApp (screenshot, laporan, unduhan) | ✅ |
+| MCP, Linux sandbox/proot, skill markdown universal | ❌ (dokumen referensi ada di `DOC/reference/`) |
 | Skills/marketplace, observability lanjutan | ❌ |
 
 Fitur yang belum ada **tidak** ditampilkan sebagai UI palsu — menu yang belum didukung menampilkan
@@ -316,6 +320,47 @@ hasilnya digabung ke prompt percakapan; pengguna mendapat pesan "📎 Media dite
 Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersedia di
 `WaGatewayManager`.
 
+### Priority 9 — Terminal bawaan (agent bisa curl/wget/bash/python)
+
+* `run_command` menjalankan **satu perintah** lewat `/system/bin/sh` (shell + toybox bawaan
+  Android) dengan `cwd` di dalam workspace agent; `terminal_info` melaporkan biner apa yang
+  benar-benar ada di perangkat (`sh`, `bash`, `curl`, `wget`, `python3`, `git`, `gh`, `node`, …)
+  supaya model tidak mengira ada Linux penuh. `curl`/`wget` tersedia di mayoritas perangkat;
+  `python`/`git`/`gh` hanya bila pengguna memasangnya (mis. toolchain Termux).
+* **Approval per perintah, bukan per tool.** `ShellPolicy` menilai perintah: `ls`, `cat`, `grep`,
+  `curl`, `sh skrip.sh` jalan sendiri; pasang/hapus paket (`apt`/`pip`/`npm`/`pkg`/…), `rm`,
+  `sudo`, `kill`, `git push`, dan menulis di luar workspace masuk kelas destruktif → agent parkir
+  sebagai `PENDING_APPROVAL:<id>` dan pengguna menjawab `/approve <id>`. Setelah disetujui, bridge
+  memanggil `executeApproved` sehingga perintah yang direview itulah yang dijalankan (tidak
+  diminta approve dua kali).
+* Layar **Terminal** memakai shell persisten dengan protokol marker (`exit code` + `$PWD`
+  dikirim lewat baris tersembunyi), output dibatasi 1.500 baris dan dibatch ~80 ms — jadi `cd`
+  tetap berlaku antar perintah, sama seperti terminal desktop.
+* `ShellPolicy` adalah gerbang kejujuran, bukan sandbox: perintah bisa ditulis dengan cara yang
+  tidak dikenali. Workspace tetap menjadi tempat kerja default dan path absolut di luar workspace
+  ditolak oleh file tool.
+
+### Priority 10 — Browser automation + serah terima captcha
+
+* Engine: `BrowserEngine` (antarmuka) dengan implementasi `WebViewBrowserEngine` memakai WebView
+  Android. GeckoView **belum** dipakai karena menuntut repository Maven Mozilla, toolchain Java 17
+  untuk seluruh app, dan ±100 MB native library per ABI di atas gateway Go yang sudah ada;
+  antarmukanya sengaja dibuat tipis agar GeckoView/driver lain bisa dipasang tanpa mengubah tool.
+* Satu sesi WebView hidup dipakai bersama agent dan pengguna: cookie tersimpan, jadi login tidak
+  perlu diulang. `browser_open` → `browser_read` (teks + daftar elemen `agx-N`) → `browser_click`
+  / `browser_type` (dengan `submit`) → `browser_scroll` → `browser_screenshot`.
+* **Login**: pengguna menyimpan akun per situs di Pengaturan → Browser (password dienkripsi
+  `SecretCipher`), `browser_login` mengisi form login secara generik dan melaporkan jujur bila
+  formnya tidak dikenali.
+* **Captcha/2FA tidak pernah dipalsukan.** `browser_ask_user` (dan `browser_login` saat mendeteksi
+  penanda captcha/verifikasi) menampilkan permintaan, mengirim pesan WhatsApp, lalu **menunggu**
+  pengguna menekan “Selesai — lanjutkan agent” di tab Browser (timeout 6 menit).
+* `browser_screenshot` menyimpan PNG di workspace `output/`, dan `send_file_to_chat` mengirimkannya
+  ke chat (gambar sebagai foto, tipe lain sebagai dokumen) — jadi agent bisa memperlihatkan hasil
+  kerjanya di WhatsApp.
+* Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
+  pengguna bahwa agent boleh mengendalikan sesi nyata.
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
@@ -326,13 +371,22 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
 * Tool bawaan saat ini: `current_time`, 8 file tool (workspace-locked, `delete_path` = CONFIRM),
   `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
-  `schedule_task`. Terminal/MCP/browser automation belum ada — dokumen referensinya sudah disimpan di
-  `DOC/reference/` untuk fase berikutnya.
+  `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
+  bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
+  `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,
+  `browser_logout`. MCP, Linux sandbox/proot dan skill markdown belum ada — dokumen referensinya
+  sudah disimpan di `DOC/reference/` untuk fase berikutnya.
 * Scheduler berjalan dari proses aplikasi (ticker 60 detik). Bila sistem mematikan proses, task baru
   dieksekusi setelah aplikasi dibuka lagi; eksekusi latar penuh (WorkManager/foreground service)
   belum dipakai.
 * `read_file` memotong isi pada 16.000 karakter dan memberi tahu model bahwa isinya dipotong;
   pembacaan bertahap (offset/limit) belum ada.
+* Terminal memakai shell perangkat: tanpa toolchain tambahan, `python`/`node`/`git`/`gh` tidak
+  tersedia. Linux penuh (proot/rootfs) belum ada — lihat `DOC/reference/linux-sandbox/`.
+* Browser automation memakai WebView Android (bukan GeckoView) dan bergantung pada layout halaman;
+  situs dengan anti-bot agresif bisa gagal — agent akan mengatakannya, bukan mengarang.
+* Shell persisten di layar Terminal hidup selama proses aplikasi hidup; belum ada
+  keepalive/foreground service khusus terminal (gateway service yang menjaga proses).
 * `applicationId` masih memakai nilai bawaan template.
 * `.env.example` masih berisi sisa template AI Studio dan tidak dipakai oleh build ini.
 
@@ -342,8 +396,9 @@ Sudah selesai pada iterasi ini: kontrol akses kontak, command chat, approval des
 jangka panjang + compact, subagent latar belakang, council & refleksi, scheduler, web tools, dan
 media WhatsApp masuk/keluar.
 
-Urutan yang disarankan berikutnya: Observability lanjutan → Knowledge UI (skill) → MCP →
-Terminal/sandbox Linux → Browser automation.
+Urutan yang disarankan berikutnya: Observability lanjutan (kartu token & latensi di Beranda) →
+Knowledge UI (skill markdown) → MCP connector → sandbox Linux/proot (kalau perlu `apt`/`pip`
+nyata di perangkat).
 
 Dokumen rencana lengkap ada di `DOC/`. Dossier referensi untuk sandbox Linux, terminal bawaan, dan
 browser automation (transfer spec lengkap, bukan sekadar ringkasan) ada di `DOC/reference/`.

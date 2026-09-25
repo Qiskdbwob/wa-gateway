@@ -39,7 +39,17 @@ class ChatCommandHandler(
     /** Compact needs a provider; the bridge resolves the current one lazily. */
     private val resolveProvider: () -> Pair<ModelProvider, String?>?,
     /** Live context bound from settings, so /compact honours the configured value. */
-    private val maxContextMessages: () -> Int = { 30 }
+    private val maxContextMessages: () -> Int = { 30 },
+    /**
+     * Runs a shell command for `/terminal`. Implemented by the bridge, which applies the
+     * destructive-command policy (the same one the `run_command` tool uses) and turns a
+     * destructive command into an approval request instead of executing it.
+     */
+    private val runTerminalCommand: suspend (command: String, conversationId: String) -> String =
+        { _, _ -> "Tool terminal tidak aktif. Aktifkan di Pengaturan → Terminal." },
+    /** Opens a URL for `/browser`. Implemented by the bridge. */
+    private val openBrowserUrl: suspend (url: String, conversationId: String) -> String =
+        { _, _ -> "Browser automation tidak aktif. Aktifkan di Pengaturan → Browser." }
 ) {
 
     sealed class Result {
@@ -85,6 +95,24 @@ class ChatCommandHandler(
             }
 
             "learning" -> handleLearning(parts.drop(1))
+
+            "terminal" -> {
+                val command = trimmed.removePrefix("/terminal").trim()
+                if (command.isEmpty()) {
+                    Result.Handled("Format: /terminal <perintah>\nContoh: /terminal curl -s https://example.com")
+                } else {
+                    Result.Handled(runTerminalCommand(command, conversationId))
+                }
+            }
+
+            "browser" -> {
+                val url = trimmed.removePrefix("/browser").trim()
+                if (url.isEmpty()) {
+                    Result.Handled("Format: /browser <url>\nContoh: /browser https://example.com")
+                } else {
+                    Result.Handled(openBrowserUrl(url, conversationId))
+                }
+            }
 
             "status" -> Result.Handled(statusText(contactId))
 
@@ -278,6 +306,8 @@ class ChatCommandHandler(
         /whitelist add|del <nomor> [label]
         /blacklist add|del <nomor>
         /compact — ringkas riwayat percakapan ini
+        /terminal <perintah> — jalankan perintah shell di perangkat
+        /browser <url> — buka halaman di browser otomatis agent
         /remember <teks> — simpan fakta ke memori
         /learning — review kandidat pembelajaran
         /approve <id> — setujui tool destruktif

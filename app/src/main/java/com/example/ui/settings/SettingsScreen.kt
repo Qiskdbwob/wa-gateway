@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Visibility
@@ -62,9 +64,19 @@ fun SettingsScreen(
     viewModel: WaGatewayViewModel,
     onNavigateToGateway: () -> Unit,
     onNavigateToDebug: () -> Unit,
+    onNavigateToTerminal: () -> Unit = {},
+    onNavigateToBrowser: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val baseUrl by viewModel.agentBaseUrl.collectAsState()
+    val terminalEnabled by viewModel.terminalEnabled.collectAsState()
+    val browserEnabled by viewModel.browserEnabled.collectAsState()
+    val browserSites by viewModel.browserSites.collectAsState()
+    val browserUserAgent by viewModel.browserUserAgentInput.collectAsState()
+    val browserSiteInput by viewModel.browserSiteInput.collectAsState()
+    val browserLoginUrlInput by viewModel.browserLoginUrlInput.collectAsState()
+    val browserUsernameInput by viewModel.browserUsernameInput.collectAsState()
+    val browserPasswordInput by viewModel.browserPasswordInput.collectAsState()
     val apiKey by viewModel.agentApiKey.collectAsState()
     val modelId by viewModel.agentModelId.collectAsState()
     val systemPrompt by viewModel.agentSystemPrompt.collectAsState()
@@ -712,7 +724,225 @@ fun SettingsScreen(
             }
         }
 
-        // 7. Developer & Diagnostik
+        // 7. Terminal — tool shell untuk agent + shell interaktif untuk pengguna
+        SectionHeader(title = "Terminal (Tool Agent)", icon = Icons.Default.Terminal)
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("settings_terminal_card"),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Aktifkan tool terminal",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Agent bisa menjalankan curl/wget dan skrip bash/python di dalam workspace",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = terminalEnabled,
+                        onCheckedChange = { viewModel.setTerminalEnabled(it) },
+                        modifier = Modifier.testTag("settings_terminal_switch")
+                    )
+                }
+
+                Text(
+                    text = "Perintah yang merusak (hapus data, pasang/hapus paket, sudo, git push, " +
+                        "menulis di luar workspace) tidak dijalankan otomatis — agent meminta " +
+                        "persetujuan lewat chat (/approve).",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Button(
+                    onClick = onNavigateToTerminal,
+                    modifier = Modifier.testTag("settings_open_terminal"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Buka Terminal")
+                }
+            }
+        }
+
+        // 8. Browser automation
+        SectionHeader(title = "Browser Automation", icon = Icons.Default.Public)
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("settings_browser_card"),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Aktifkan browser automation",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Agent dapat membuka halaman, mengisi form, dan menekan tombol " +
+                                "(mis. memposting ke media sosial atas permintaan Anda)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = browserEnabled,
+                        onCheckedChange = { viewModel.setBrowserEnabled(it) },
+                        modifier = Modifier.testTag("settings_browser_switch")
+                    )
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                OutlinedTextField(
+                    value = browserUserAgent,
+                    onValueChange = { viewModel.browserUserAgentInput.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("User-Agent kustom (opsional)") },
+                    singleLine = true
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { viewModel.saveBrowserUserAgent() }) {
+                        Text("Simpan User-Agent")
+                    }
+                    Button(
+                        onClick = onNavigateToBrowser,
+                        modifier = Modifier.testTag("settings_open_browser"),
+                        colors = ButtonDefaults.buttonColors(containerColor = AgentEmerald)
+                    ) {
+                        Text("Buka Browser")
+                    }
+                }
+
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                Text(
+                    text = "Akun tersimpan (dipakai tool browser_login)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (browserSites.isEmpty()) {
+                    Text(
+                        text = "Belum ada akun. Tambahkan situs + kredensial di bawah agar agent bisa " +
+                            "login sendiri; captcha/2FA tetap Anda selesaikan di tab Browser.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    browserSites.forEach { site ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = site.site, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = (site.username.ifBlank { "(tanpa username)" }) +
+                                        (if (site.loginUrl.isBlank()) "" else " • ${site.loginUrl}"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { viewModel.removeBrowserSite(site.site) }) {
+                                Text("×", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = browserSiteInput,
+                    onValueChange = { viewModel.browserSiteInput.value = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_browser_site"),
+                    label = { Text("Nama situs (contoh: instagram)") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = browserLoginUrlInput,
+                    onValueChange = { viewModel.browserLoginUrlInput.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("URL halaman login (opsional)") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = browserUsernameInput,
+                    onValueChange = { viewModel.browserUsernameInput.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Username / email") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = browserPasswordInput,
+                    onValueChange = { viewModel.browserPasswordInput.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Password / token") },
+                    singleLine = true,
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showApiKey = !showApiKey }) {
+                            Icon(
+                                imageVector = if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showApiKey) "Sembunyikan" else "Tampilkan"
+                            )
+                        }
+                    }
+                )
+                Button(onClick = { viewModel.addBrowserSite() }) {
+                    Text("Tambah / Perbarui Akun")
+                }
+
+                Text(
+                    text = "Catatan: captcha dan kode 2FA selalu butuh Anda. Saat agent menemukannya, " +
+                        "agent mengirim pesan lalu menunggu Anda menekan \"Selesai\" di tab Browser.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // 9. Developer & Diagnostik
         SectionHeader(title = "Developer & Diagnostik", icon = Icons.Default.BugReport)
 
         Card(

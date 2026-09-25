@@ -357,10 +357,14 @@ fun DeveloperDebugScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = if (tool.permission == ToolPermission.SAFE) "SAFE" else "CONFIRM",
+                                    text = tool.permission.name,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (tool.permission == ToolPermission.SAFE) AgentEmerald else Color(0xFFF59E0B)
+                                    color = when (tool.permission) {
+                                        ToolPermission.SAFE -> AgentEmerald
+                                        ToolPermission.AUTO_SAFE -> MaterialTheme.colorScheme.primary
+                                        ToolPermission.CONFIRM -> Color(0xFFF59E0B)
+                                    }
                                 )
                             }
                         }

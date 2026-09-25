@@ -15,6 +15,7 @@ import com.example.agent.model.AgentInput
 import com.example.agent.model.AgentResponse
 import com.example.agent.model.AgentRole
 import com.example.agent.model.ToolPermission
+import com.example.agent.model.ToolResult
 import com.example.agent.provider.EchoTestProvider
 import com.example.agent.provider.GeminiVisionProvider
 import com.example.agent.provider.ModelProvider
@@ -47,6 +48,24 @@ import com.example.agent.tool.ToolRegistry
 import com.example.agent.tool.WebFetchTool
 import com.example.agent.tool.WebSearchTool
 import com.example.agent.tool.CouncilTool
+import com.example.agent.tool.BrowserClickTool
+import com.example.agent.tool.BrowserClearSessionTool
+import com.example.agent.tool.BrowserLoginTool
+import com.example.agent.tool.BrowserOpenTool
+import com.example.agent.tool.BrowserReadTool
+import com.example.agent.tool.BrowserScreenshotTool
+import com.example.agent.tool.BrowserScrollTool
+import com.example.agent.tool.BrowserTypeTool
+import com.example.agent.tool.BrowserUserHelpTool
+import com.example.agent.tool.SendFileToChatTool
+import com.example.agent.tool.TerminalInfoTool
+import com.example.agent.tool.TerminalTool
+import com.example.agent.browser.BrowserAutomationManager
+import com.example.agent.browser.SiteCredential
+import com.example.agent.browser.SiteCredentialStore
+import com.example.agent.browser.WebViewBrowserEngine
+import com.example.agent.model.ApprovalAwareTool
+import com.example.agent.terminal.TerminalManager
 import com.example.agent.workspace.Workspace
 import com.example.wagateway.OutgoingMessageSender
 import com.example.wagateway.WaGatewayManager
@@ -62,6 +81,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.File
 
 /** Metadata key holding the WhatsApp message ID that should be edited with the answer. */
 const val EDIT_TARGET_KEY = "whatsappEditTarget"
@@ -223,6 +243,46 @@ class WhatsAppAgentBridge private constructor(
         val isGeminiNative: Boolean
     )
 
+    // ==================================================================================
+    // Terminal (built-in shell) — goal: the agent can curl/wget and run bash/python scripts
+    // ==================================================================================
+    val terminalManager = TerminalManager(workspace)
+
+    private val _terminalEnabled = MutableStateFlow(true)
+    val terminalEnabled: StateFlow<Boolean> = _terminalEnabled.asStateFlow()
+
+    // ==================================================================================
+    // Browser automation — goal: the agent can drive a real site (e.g. post to a social
+    // network), with a human-in-the-loop handoff for captcha / 2FA.
+    // ==================================================================================
+    private val _browserEnabled = MutableStateFlow(false)
+    val browserEnabled: StateFlow<Boolean> = _browserEnabled.asStateFlow()
+
+    private val _browserSites = MutableStateFlow<List<SiteCredential>>(emptyList())
+    val browserSites: StateFlow<List<SiteCredential>> = _browserSites.asStateFlow()
+
+    private val _browserUserAgent = MutableStateFlow("")
+
+    /**
+     * Context the WebView is created with. The Browser screen swaps this to its Activity while
+     * it is open (so rendering, screenshots and input all behave) and back afterwards.
+     */
+    @Volatile
+    var browserHostContext: Context = context
+
+    val browserEngine = WebViewBrowserEngine(
+        contextProvider = { browserHostContext },
+        userAgentProvider = { _browserUserAgent.value.takeIf { it.isNotBlank() } }
+    )
+
+    val browserAutomation = BrowserAutomationManager(
+        engine = browserEngine,
+        credentials = { _browserSites.value },
+        notifyUser = { conversationId, message ->
+            if (conversationId.isNotBlank()) gatewayManager.sendText(conversationId, message)
+        }
+    )
+
     val toolRegistry: ToolRegistry = buildToolRegistry()
 
     val agentLoop = AgentLoop(
@@ -280,6 +340,14 @@ class WhatsAppAgentBridge private constructor(
                         systemPrompt = saved.systemPrompt,
                         modelId = saved.modelId
                     )
+                    _terminalEnabled.value = saved.terminalEnabled
+                    _browserEnabled.value = saved.browserEnabled
+                    _browserUserAgent.value = saved.browserUserAgent
+                    _browserSites.value = SiteCredentialStore.decode(
+                        SecretCipher.decrypt(saved.browserSites)
+                    )
+                    applyTerminalTools(toolRegistry, saved.terminalEnabled)
+                    applyBrowserTools(toolRegistry, saved.browserEnabled)
                     updateModelRouter()
                 }
                 // Approvals that expired while the app was closed.
@@ -327,7 +395,130 @@ class WhatsAppAgentBridge private constructor(
                 scheduler.create(name, schedule, prompt, conversationId).id
             }
         )
+        // Terminal tools — the agent can run curl/wget/bash/python, with per-command approval.
+        applyTerminalTools(registry, _terminalEnabled.value)
+        // Browser automation tools — off until the user opts in from Settings.
+        applyBrowserTools(registry, _browserEnabled.value)
+        // Lets the agent hand a produced file (screenshot, report, download) to the user.
+        registry.register(
+            SendFileToChatTool { conversationId, path, caption ->
+                sendWorkspaceFile(conversationId, path, caption)
+            }
+        )
         return registry
+    }
+
+    /** Registers or removes the terminal tools when the user toggles them in Settings. */
+    private fun applyTerminalTools(registry: ToolRegistry, enabled: Boolean) {
+        if (enabled) {
+            registry.register(
+                TerminalTool(
+                    manager = terminalManager,
+                    approvalEnabled = { _approvalEnabled.value },
+                    requestApproval = { conversationId, arguments ->
+                        approvalCoordinator.createRequest(conversationId, "run_command", arguments).id
+                    }
+                )
+            )
+            registry.register(TerminalInfoTool(terminalManager))
+        } else {
+            registry.unregister("run_command")
+            registry.unregister("terminal_info")
+        }
+    }
+
+    /** Registers or removes the browser automation tools when the user toggles them. */
+    private fun applyBrowserTools(registry: ToolRegistry, enabled: Boolean) {
+        if (enabled) {
+            registry.register(BrowserOpenTool(browserAutomation))
+            registry.register(BrowserReadTool(browserAutomation))
+            registry.register(BrowserClickTool(browserAutomation))
+            registry.register(BrowserTypeTool(browserAutomation))
+            registry.register(BrowserScrollTool(browserAutomation))
+            registry.register(
+                BrowserScreenshotTool(browserAutomation) { bytes, fileName ->
+                    saveScreenshot(bytes, fileName)
+                }
+            )
+            registry.register(BrowserLoginTool(browserAutomation))
+            registry.register(BrowserUserHelpTool(browserAutomation))
+            registry.register(BrowserClearSessionTool(browserAutomation))
+        } else {
+            BROWSER_TOOL_NAMES.forEach { registry.unregister(it) }
+        }
+    }
+
+    /** Stores a browser screenshot inside the workspace and returns its relative path. */
+    private fun saveScreenshot(bytes: ByteArray, fileName: String): String {
+        val directory = terminalManager.runner.outputDirectory
+        val file = File(directory, fileName.substringAfterLast('/').ifBlank { "screenshot.png" })
+        file.writeBytes(bytes)
+        return workspace.relativePath(file)
+    }
+
+    /** Minimal MIME lookup so WhatsApp receives a sensible type for a workspace file. */
+    private fun guessMimeType(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        "pdf" -> "application/pdf"
+        "txt", "md", "log", "json", "csv" -> "text/plain"
+        "zip" -> "application/zip"
+        "mp3", "ogg", "m4a", "opus" -> "audio/mpeg"
+        "mp4" -> "video/mp4"
+        else -> "application/octet-stream"
+    }
+
+    /** Sends a workspace file to the requesting WhatsApp chat (image as photo, otherwise document). */
+    private suspend fun sendWorkspaceFile(
+        conversationId: String,
+        path: String,
+        caption: String
+    ): ToolResult {
+        val file = try {
+            workspace.resolve(path)
+        } catch (e: Exception) {
+            return ToolResult(false, "", "Path ditolak: ${e.message}")
+        }
+        if (!file.exists() || !file.isFile) {
+            return ToolResult(false, "", "File tidak ada di workspace: $path")
+        }
+        val bytes = try {
+            file.readBytes()
+        } catch (e: Exception) {
+            return ToolResult(false, "", "Gagal membaca file: ${e.message}")
+        }
+        if (bytes.size > MAX_SEND_BYTES) {
+            return ToolResult(
+                false,
+                "",
+                "File terlalu besar (${bytes.size / (1024 * 1024)} MB); batas pengiriman 16 MB."
+            )
+        }
+        if (!conversationId.contains('@')) {
+            return ToolResult(
+                false,
+                "",
+                "Percakapan ini bukan chat WhatsApp, jadi file tidak bisa dikirim. " +
+                    "File tersimpan di workspace: ${workspace.relativePath(file)}"
+            )
+        }
+        val mime = guessMimeType(file.name)
+        val result = if (mime.startsWith("image/")) {
+            gatewayManager.sendImage(conversationId, bytes, mime, caption)
+        } else {
+            gatewayManager.sendDocument(conversationId, bytes, mime, file.name)
+        }
+        return if (result.isSuccess) {
+            ToolResult(
+                success = true,
+                output = "File \"${file.name}\" terkirim ke chat.",
+                metadata = mapOf("path" to workspace.relativePath(file))
+            )
+        } else {
+            ToolResult(false, "", "Gagal mengirim file: ${result.exceptionOrNull()?.message}")
+        }
     }
 
     private fun updateModelRouter() {
@@ -403,6 +594,51 @@ class WhatsAppAgentBridge private constructor(
         persistConfig()
     }
 
+    // ==================================================================================
+    // Terminal + browser automation settings
+    // ==================================================================================
+
+    fun setTerminalEnabled(enabled: Boolean) {
+        _terminalEnabled.value = enabled
+        applyTerminalTools(toolRegistry, enabled)
+        persistConfig()
+    }
+
+    /** Turning the browser on is the user's consent for the agent to drive a real session. */
+    fun setBrowserEnabled(enabled: Boolean) {
+        _browserEnabled.value = enabled
+        applyBrowserTools(toolRegistry, enabled)
+        persistConfig()
+    }
+
+    fun setBrowserUserAgent(userAgent: String) {
+        _browserUserAgent.value = userAgent.trim()
+        persistConfig()
+    }
+
+    /** Current custom User-Agent (empty = engine default). */
+    fun browserUserAgentValue(): String = _browserUserAgent.value
+
+    /** Adds or replaces the stored account for one site (password is encrypted at rest). */
+    fun addBrowserSite(site: String, loginUrl: String, username: String, password: String) {
+        val trimmedSite = site.trim()
+        if (trimmedSite.isEmpty()) return
+        val remaining = _browserSites.value.filterNot { it.site.equals(trimmedSite, ignoreCase = true) }
+        _browserSites.value = remaining + SiteCredential(
+            site = trimmedSite,
+            loginUrl = loginUrl.trim(),
+            username = username.trim(),
+            password = password,
+            notes = ""
+        )
+        persistConfig()
+    }
+
+    fun removeBrowserSite(site: String) {
+        _browserSites.value = _browserSites.value.filterNot { it.site.equals(site, ignoreCase = true) }
+        persistConfig()
+    }
+
     fun updateConfig(baseUrl: String, apiKey: String, modelId: String, prompt: String) {
         providerConfig.value = ProviderConfig(
             baseUrl = baseUrl.trim(),
@@ -464,6 +700,10 @@ class WhatsAppAgentBridge private constructor(
                         visionBaseUrl = _visionConfig.value.baseUrl,
                         visionApiKey = SecretCipher.encrypt(_visionConfig.value.apiKey),
                         visionModelId = _visionConfig.value.modelId,
+                        terminalEnabled = _terminalEnabled.value,
+                        browserEnabled = _browserEnabled.value,
+                        browserSites = SecretCipher.encrypt(SiteCredentialStore.encode(_browserSites.value)),
+                        browserUserAgent = _browserUserAgent.value,
                         updatedAt = System.currentTimeMillis()
                     )
                 )
@@ -546,8 +786,42 @@ class WhatsAppAgentBridge private constructor(
             executeApprovedToolCall(toolName, arguments, conversationId)
         },
         resolveProvider = { resolveProviderPair() },
-        maxContextMessages = { _maxContextMessages.value }
+        maxContextMessages = { _maxContextMessages.value },
+        runTerminalCommand = { command, conversationId -> runTerminalFromChat(command, conversationId) },
+        openBrowserUrl = { url, conversationId -> openBrowserFromChat(url, conversationId) }
     )
+
+    /**
+     * `/terminal <cmd>` — same policy as the `run_command` tool: a destructive command becomes
+     * an approval request (the user then answers /approve <id>) instead of running silently.
+     */
+    private suspend fun runTerminalFromChat(command: String, conversationId: String): String {
+        if (!_terminalEnabled.value) {
+            return "Tool terminal sedang nonaktif. Aktifkan dulu di Pengaturan → Terminal."
+        }
+        val verdict = com.example.agent.terminal.ShellPolicy.assess(command)
+        if (verdict.destructive) {
+            val arguments = "{\"command\":\"" + command
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"") + "\"}"
+            val request = approvalCoordinator.createRequest(conversationId, "run_command", arguments)
+            return "🔐 Perintah ini perlu persetujuan (${verdict.reason}).\n" +
+                "Balas /approve ${request.id} untuk menjalankan atau /reject ${request.id} untuk membatalkan."
+        }
+        val result = terminalManager.runner.run(command)
+        val body = result.output.ifBlank { "(tanpa output)" }
+        return "$ $command\n(exit ${result.exitCode})\n$body"
+    }
+
+    /** `/browser <url>` — opens a page with the agent's browser session and returns its text. */
+    private suspend fun openBrowserFromChat(url: String, conversationId: String): String {
+        if (!_browserEnabled.value) {
+            return "Browser automation sedang nonaktif. Aktifkan dulu di Pengaturan → Browser."
+        }
+        val opened = browserAutomation.open(url)
+        if (!opened.ok) return "Gagal membuka $url: ${opened.error ?: "tidak diketahui"}"
+        return browserAutomation.describe(browserAutomation.read(3_000), 3_000)
+    }
 
     /**
      * Executes a previously approved CONFIRM tool call (after `/approve <id>`).
@@ -561,9 +835,15 @@ class WhatsAppAgentBridge private constructor(
         val tool = toolRegistry.get(toolName)
             ?: return "Tool '$toolName' tidak ditemukan."
         // The call was approved by the user, so it runs directly here — the gate is only
-        // bypassed for this single, explicitly confirmed invocation.
+        // bypassed for this single, explicitly confirmed invocation. Tools whose permission
+        // depends on their arguments (run_command) get executeApproved so the policy does not
+        // ask for the same approval a second time.
         return try {
-            val result = tool.execute(arguments)
+            val result = if (tool is ApprovalAwareTool) {
+                tool.executeApproved(arguments)
+            } else {
+                tool.execute(arguments)
+            }
             agentLoop.log(
                 "APPROVAL_EXECUTED",
                 "tool=$toolName, success=${result.success}, conversation=$conversationId"
@@ -925,6 +1205,32 @@ class WhatsAppAgentBridge private constructor(
     // UI surface — access control, memory, approvals, tasks, vision
     // ==================================================================================
 
+    // --- Terminal & browser surfaces for the UI ----------------------------------------
+
+    /** Live terminal state (output lines, cwd, busy, exit code) for the Terminal screen. */
+    val terminalState: StateFlow<com.example.agent.terminal.TerminalState> = terminalManager.state
+
+    /** Device toolchain report (which binaries exist) for the Terminal screen header. */
+    val terminalCapabilities =
+        MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** A captcha/2FA step the user has to finish by hand in the Browser screen. */
+    val browserPendingUserAction = browserAutomation.pendingUserAction
+
+    suspend fun refreshTerminalCapabilities(force: Boolean = false) {
+        terminalCapabilities.value = terminalManager.loadCapabilities(force = force)
+    }
+
+    /** Runs a command in the persistent terminal session (Terminal screen + /terminal). */
+    suspend fun runInTerminal(command: String): Boolean = terminalManager.send(command)
+
+    fun clearTerminal() = terminalManager.clear()
+
+    fun stopTerminal() = terminalManager.stop()
+
+    /** The live WebView, so the Browser screen can show the session the agent is driving. */
+    fun browserView(): android.webkit.WebView? = browserEngine.viewOrNull()
+
     /** Background subagent runs, newest first (Tasks screen). */
     val subAgentTasksFlow: kotlinx.coroutines.flow.Flow<List<AgentTaskEntity>> =
         agentTaskDao.getRecentFlow(50)
@@ -1018,6 +1324,21 @@ class WhatsAppAgentBridge private constructor(
     }
 
     companion object {
+        /** 16 MB — WhatsApp's own practical limit for a single document send. */
+        private const val MAX_SEND_BYTES = 16 * 1024 * 1024
+
+        private val BROWSER_TOOL_NAMES = listOf(
+            "browser_open",
+            "browser_read",
+            "browser_click",
+            "browser_type",
+            "browser_scroll",
+            "browser_screenshot",
+            "browser_login",
+            "browser_ask_user",
+            "browser_logout"
+        )
+
         @Volatile
         private var instance: WhatsAppAgentBridge? = null
 

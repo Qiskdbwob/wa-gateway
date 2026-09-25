@@ -1,9 +1,14 @@
 package com.example.wagateway
 
 import android.app.Application
+import android.content.Context
+import android.webkit.WebView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agent.bridge.WhatsAppAgentBridge
+import com.example.agent.browser.BrowserAutomationManager
+import com.example.agent.browser.SiteCredential
+import com.example.agent.terminal.TerminalState
 import com.example.agent.loop.AgentState
 import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
@@ -455,6 +460,89 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
                 _testResponseText.value = "Agent mengalami error: ${result.exceptionOrNull()?.message}"
             }
         }
+    }
+
+    // ==================================================================================
+    // Built-in terminal (agent: curl/wget/bash/python; user: interactive shell)
+    // ==================================================================================
+    val terminalEnabled: StateFlow<Boolean> = agentBridge.terminalEnabled
+    val terminalState: StateFlow<TerminalState> = agentBridge.terminalState
+    val terminalCapabilities: StateFlow<Map<String, String>> = agentBridge.terminalCapabilities
+    val terminalInput = MutableStateFlow("")
+
+    fun setTerminalEnabled(enabled: Boolean) = agentBridge.setTerminalEnabled(enabled)
+
+    fun sendTerminalCommand() {
+        val command = terminalInput.value.trim()
+        if (command.isEmpty()) return
+        terminalInput.value = ""
+        viewModelScope.launch { agentBridge.runInTerminal(command) }
+    }
+
+    fun clearTerminal() = agentBridge.clearTerminal()
+
+    fun stopTerminal() = agentBridge.stopTerminal()
+
+    fun refreshTerminalCapabilities() {
+        viewModelScope.launch { agentBridge.refreshTerminalCapabilities(force = true) }
+    }
+
+    // ==================================================================================
+    // Browser automation (with the captcha / 2FA handoff)
+    // ==================================================================================
+    val browserEnabled: StateFlow<Boolean> = agentBridge.browserEnabled
+    val browserSites: StateFlow<List<SiteCredential>> = agentBridge.browserSites
+    val browserPendingUserAction: StateFlow<BrowserAutomationManager.UserActionRequest?> =
+        agentBridge.browserPendingUserAction
+
+    val browserSiteInput = MutableStateFlow("")
+    val browserLoginUrlInput = MutableStateFlow("")
+    val browserUsernameInput = MutableStateFlow("")
+    val browserPasswordInput = MutableStateFlow("")
+    val browserUserAgentInput = MutableStateFlow(agentBridge.browserUserAgentValue())
+
+    fun setBrowserEnabled(enabled: Boolean) = agentBridge.setBrowserEnabled(enabled)
+
+    fun saveBrowserUserAgent() {
+        agentBridge.setBrowserUserAgent(browserUserAgentInput.value)
+        _sendFeedback.value = "User-Agent browser disimpan."
+    }
+
+    fun addBrowserSite() {
+        val site = browserSiteInput.value.trim()
+        if (site.isEmpty()) {
+            _sendFeedback.value = "Nama situs wajib diisi (contoh: instagram)."
+            return
+        }
+        agentBridge.addBrowserSite(
+            site = site,
+            loginUrl = browserLoginUrlInput.value,
+            username = browserUsernameInput.value,
+            password = browserPasswordInput.value
+        )
+        browserSiteInput.value = ""
+        browserLoginUrlInput.value = ""
+        browserUsernameInput.value = ""
+        browserPasswordInput.value = ""
+        _sendFeedback.value = "Akun $site disimpan (password terenkripsi)."
+    }
+
+    fun removeBrowserSite(site: String) = agentBridge.removeBrowserSite(site)
+
+    /** The Browser screen attaches the live WebView; this keeps the engine's context in sync. */
+    fun bindBrowserHostContext(context: Context?) {
+        agentBridge.browserHostContext = context ?: getApplication()
+    }
+
+    fun browserView(): WebView? = agentBridge.browserView()
+
+    fun completeBrowserUserAction() = agentBridge.browserAutomation.completeUserAction()
+
+    fun abandonBrowserUserAction() = agentBridge.browserAutomation.abandonUserAction()
+
+    fun clearBrowserSession() {
+        viewModelScope.launch { agentBridge.browserAutomation.clearSession() }
+        _sendFeedback.value = "Sesi browser dibersihkan."
     }
 }
 

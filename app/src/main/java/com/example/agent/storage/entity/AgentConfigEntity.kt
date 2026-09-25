@@ -28,6 +28,15 @@ data class AgentConfigEntity(
     val visionModelId: String = "gemini-2.0-flash",
     // --- General -------------------------------------------------------------------
     val agentName: String = "Personal AI Agent",
+    // --- Terminal (built-in shell tool) --------------------------------------------
+    /** When false the `run_command`/`terminal_info` tools are not registered at all. */
+    val terminalEnabled: Boolean = true,
+    // --- Browser automation ---------------------------------------------------------
+    /** Off by default: the user opts in to letting the agent drive a real browsing session. */
+    val browserEnabled: Boolean = false,
+    /** `SiteCredentialStore` blob, encrypted with SecretCipher (never plaintext). */
+    val browserSites: String = "",
+    val browserUserAgent: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     companion object {

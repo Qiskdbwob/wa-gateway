@@ -17,3 +17,17 @@ enum class ToolPermission {
     AUTO_SAFE,
     CONFIRM
 }
+
+/**
+ * Implemented by tools whose permission class depends on their *arguments* rather than on the
+ * tool itself.
+ *
+ * `run_command` is the reason this exists: running `ls` must not need a human, running
+ * `pip install x` must. Such a tool is registered as AUTO_SAFE, decides for itself inside
+ * `execute()` and asks for an approval request when the policy says so; when the user later
+ * approves it, the bridge replays the stored call through [executeApproved] so the exact
+ * command that was reviewed is the one that runs (and is not asked for approval twice).
+ */
+interface ApprovalAwareTool {
+    suspend fun executeApproved(arguments: String): ToolResult
+}
