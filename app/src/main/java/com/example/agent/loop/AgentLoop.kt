@@ -224,7 +224,7 @@ class AgentLoop(
                 // 2. Persist Incoming User Message
                 val userMsg = AgentMessage(
                     id = input.messageId,
-                    sessionId = sessionId,
+                    sessionId = session.sessionId,
                     role = AgentRole.USER,
                     content = input.content,
                     timestamp = input.timestamp
@@ -351,7 +351,7 @@ class AgentLoop(
                                 // that answer it.
                                 activeHistory = (activeHistory + AgentMessage(
                                     id = "tool-call-${input.messageId}-$toolIteration",
-                                    sessionId = sessionId,
+                                    sessionId = session.sessionId,
                                     role = AgentRole.ASSISTANT,
                                     content = modelResponse.content,
                                     timestamp = System.currentTimeMillis(),
@@ -425,12 +425,13 @@ class AgentLoop(
                                             }
                                         } catch (e: Exception) {
                                             log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
-                                            ToolResult(
+                                            result = ToolResult(
                                                 success = false,
                                                 output = "",
                                                 error = "Tool '${call.name}' gagal: ${e.message}"
                                             )
                                         }
+                                        result ?: ToolResult(success = false, output = "", error = "Tool result tidak tersedia.")
                                     }
                                     val toolLatencyMs = System.currentTimeMillis() - toolStart
 
@@ -448,7 +449,7 @@ class AgentLoop(
 
                                     activeHistory = (activeHistory + AgentMessage(
                                         id = UUID.randomUUID().toString(),
-                                        sessionId = sessionId,
+                                        sessionId = session.sessionId,
                                         role = AgentRole.TOOL,
                                         content = describeToolResult(call.name, toolResult),
                                         timestamp = System.currentTimeMillis(),
@@ -646,7 +647,7 @@ class AgentLoop(
                 // 6. Persist Assistant Response in Session
                 val assistantMsg = AgentMessage(
                     id = UUID.randomUUID().toString(),
-                    sessionId = sessionId,
+                    sessionId = session.sessionId,
                     role = AgentRole.ASSISTANT,
                     content = finalAgentResponse.content,
                     timestamp = System.currentTimeMillis()
