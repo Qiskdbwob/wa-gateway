@@ -110,12 +110,12 @@ class ApprovalGate(
     }
 
     /** Called by the UI / bridge when the human approves the pending request. */
-    fun grant() = trySend(ApprovalDecision.Approved)
+    fun grant() = dispatch(ApprovalDecision.Approved)
     /** Called by the UI / bridge when the human rejects the pending request. */
-    fun deny() = trySend(ApprovalDecision.Denied)
+    fun deny() = dispatch(ApprovalDecision.Denied)
 
-    private fun trySend(decision: ApprovalDecision) {
-        val ch = decision ?: return
-        ch.trySend(decision).isSuccess
+    private fun dispatch(outcome: ApprovalDecision) {
+        val channel = decision ?: return
+        channel.trySend(outcome).isSuccess
     }
 }

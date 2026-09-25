@@ -417,7 +417,7 @@ class AgentLoop(
                                                     channel = input.channel,
                                                     metadata = input.metadata
                                                 )
-                                                if (tool is ContextAwareTool) {
+                                                toolResult = if (tool is ContextAwareTool) {
                                                     tool.execute(call.arguments, executionContext)
                                                 } else {
                                                     tool.execute(call.arguments)
@@ -433,17 +433,21 @@ class AgentLoop(
                                             )
                                         }
                                     }
+                                    // Every branch above assigns toolResult; this is a safety net
+                                    // so the compiler (and a future refactor) can never leak a null.
+                                    val result = toolResult
+                                        ?: ToolResult(success = false, output = "", error = "Tool result tidak tersedia.")
                                     val toolLatencyMs = System.currentTimeMillis() - toolStart
 
                                     log(
                                         "TOOL_RESULT",
-                                        "tool=${call.name}, success=${toolResult.success}, latency=${toolLatencyMs}ms, output=\"${toolResult.output.take(120)}\", error=${toolResult.error?.take(120) ?: "none"}"
+                                        "tool=${call.name}, success=${result.success}, latency=${toolLatencyMs}ms, output=\"${result.output.take(120)}\", error=${result.error?.take(120) ?: "none"}"
                                     )
                                     emitProgress(
-                                        if (toolResult.success) {
+                                        if (result.success) {
                                             "🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
                                         } else {
-                                            "🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
+                                            "🛠️ ${call.name} gagal: ${result.error ?: "tanpa detail"}"
                                         }
                                     )
 
@@ -451,7 +455,7 @@ class AgentLoop(
                                         id = UUID.randomUUID().toString(),
                                         sessionId = session.sessionId,
                                         role = AgentRole.TOOL,
-                                        content = describeToolResult(call.name, toolResult),
+                                        content = describeToolResult(call.name, result),
                                         timestamp = System.currentTimeMillis(),
                                         toolCallId = call.id,
                                         toolName = call.name
