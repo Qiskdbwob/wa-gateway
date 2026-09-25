@@ -97,6 +97,16 @@ class FakeMemoryItemDao : MemoryItemDao {
     override suspend fun deleteByType(type: String) {
         items.values.filter { it.type == type }.forEach { items.remove(it.id) }
     }
+
+    /** Mirrors the SQL: body *or* keywords, obsolete rows excluded, newest first. */
+    override suspend fun searchItems(term: String, limit: Int): List<MemoryItemEntity> {
+        val needle = term.lowercase()
+        return items.values
+            .filter { it.status != MemoryItemEntity.STATUS_OBSOLETE }
+            .filter { it.content.lowercase().contains(needle) || it.keywords.lowercase().contains(needle) }
+            .sortedByDescending { it.updatedAt }
+            .take(limit)
+    }
 }
 
 class FakeApprovalRequestDao : ApprovalRequestDao {
