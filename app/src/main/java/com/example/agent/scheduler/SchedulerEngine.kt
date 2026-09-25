@@ -5,6 +5,7 @@ import com.example.agent.storage.entity.ScheduledTaskEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -130,7 +131,7 @@ class SchedulerEngine(
             periodMs: Long = 60_000L,
             scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         ): kotlinx.coroutines.Job = scope.launch {
-            while (kotlinx.coroutines.isActive) {
+            while (isActive) {
                 try {
                     engine.tick()
                 } catch (_: Exception) {

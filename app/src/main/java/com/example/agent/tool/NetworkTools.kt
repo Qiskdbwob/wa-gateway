@@ -100,6 +100,36 @@ class WebSearchTool : Tool {
         return hits
     }
 
+    /**
+     * Plain HTTP GET (network on the caller's IO dispatcher) returning the body as UTF-8,
+     * capped so a huge page cannot exhaust memory. Throws IOException on HTTP errors.
+     */
+    private fun httpGet(url: String): String {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 20_000
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty("User-Agent", USER_AGENT)
+            val code = connection.responseCode
+            if (code !in 200..299) throw IOException("HTTP $code dari $url")
+            return connection.inputStream.use { stream ->
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(16 * 1024)
+                var total = 0
+                while (total < MAX_BYTES) {
+                    val read = stream.read(chunk)
+                    if (read < 0) break
+                    buffer.write(chunk, 0, read)
+                    total += read
+                }
+                buffer.toString("UTF-8")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun decodeDuckUrl(raw: String): String? {
         val decoded = if (raw.contains("uddg=")) {
             val start = raw.indexOf("uddg=") + 5
@@ -122,6 +152,12 @@ class WebSearchTool : Tool {
             .replace("&nbsp;", " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+
+    private companion object {
+        const val MAX_BYTES = 512 * 1024
+        const val USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
+    }
 }
 
 /** Fetches a web page and returns readable text (HTML stripped, size-capped). */
