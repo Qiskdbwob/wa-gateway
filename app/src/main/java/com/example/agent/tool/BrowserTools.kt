@@ -158,7 +158,7 @@ class BrowserScrollTool(private val manager: BrowserAutomationManager) : Tool {
     override val permission: ToolPermission = ToolPermission.AUTO_SAFE
 
     override suspend fun execute(input: String): ToolResult {
-        val direction = JsonArgs.string(input, "direction")?.trim().lowercase().orEmpty()
+        val direction = JsonArgs.string(input, "direction")?.trim()?.lowercase().orEmpty()
         if (direction.isEmpty()) return ToolResult(false, "", "Argumen 'direction' wajib diisi.")
         val amount = (JsonArgs.int(input, "amount") ?: 800).coerceIn(100, 10_000)
         val result = manager.scroll(direction, amount)

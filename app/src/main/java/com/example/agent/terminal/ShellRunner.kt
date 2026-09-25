@@ -188,17 +188,23 @@ class ShellRunner(
     /** Resolves a path for tools (screenshots, scripts) and rejects escapes. */
     fun resolveInWorkspace(requested: String): File = workspace.resolve(requested)
 
-    private fun buildEnvironment(cwd: File): Map<String, String> = mapOf(
-        "PATH" to (extraPath + listOf(binDirectory.absolutePath, "/system/bin", "/system/xbin", "/vendor/bin")
+    private fun buildEnvironment(cwd: File): Map<String, String> {
+        val pathPrefix = (extraPath + listOf(binDirectory.absolutePath, "/system/bin", "/system/xbin", "/vendor/bin"))
             .filter { it.isNotBlank() }
-            .joinToString(":") + ":" + (System.getenv("PATH") ?: "/sbin:/system/sbin:/system/bin:/system/xbin")),
-        "HOME" to workspace.rootPath,
-        "TMPDIR" to cwd.absolutePath,
-        "PWD" to cwd.absolutePath,
-        "LC_ALL" to "C.UTF-8",
-        "LANG" to "C.UTF-8",
-        "TERM" to "xterm-256color"
-    )
+            .joinToString(":")
+        // Explicit type: System.getenv() is nullable, and leaving it inline made the whole
+        // map infer Map<String, Any> instead of Map<String, String>.
+        val systemPath: String = System.getenv("PATH") ?: DEFAULT_SYSTEM_PATH
+        return mapOf(
+            "PATH" to (pathPrefix + ":" + systemPath),
+            "HOME" to workspace.rootPath,
+            "TMPDIR" to cwd.absolutePath,
+            "PWD" to cwd.absolutePath,
+            "LC_ALL" to "C.UTF-8",
+            "LANG" to "C.UTF-8",
+            "TERM" to "xterm-256color"
+        )
+    }
 
     companion object {
         /** Android's POSIX shell; exists on every Android device since API 1. */
@@ -208,6 +214,9 @@ class ShellRunner(
         const val MIN_TIMEOUT_MS = 1_000L
         const val MAX_TIMEOUT_MS = 120_000L
         const val DEFAULT_MAX_OUTPUT_CHARS = 12_000
+
+        /** Fallback PATH when the process environment has none (it always does on Android). */
+        private const val DEFAULT_SYSTEM_PATH = "/sbin:/system/sbin:/system/bin:/system/xbin"
 
         /** Binaries worth probing for the model's capability report. */
         val CANDIDATE_BINARIES = listOf(

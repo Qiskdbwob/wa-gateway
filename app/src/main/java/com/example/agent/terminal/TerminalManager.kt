@@ -90,14 +90,17 @@ class TerminalManager(
             val builder = ProcessBuilder(shellPath)
                 .directory(directory)
                 .redirectErrorStream(true)
+            val pathPrefix = listOf(
+                runner.binDirectory.absolutePath,
+                "/system/bin",
+                "/system/xbin",
+                "/vendor/bin"
+            ).joinToString(":")
+            // Explicit types so the whole map is Map<String, String>, not Map<String, Any>.
+            val systemPath: String = System.getenv("PATH") ?: "/sbin:/system/sbin:/system/bin"
             builder.environment().putAll(
                 mapOf(
-                    "PATH" to (listOf(
-                        runner.binDirectory.absolutePath,
-                        "/system/bin",
-                        "/system/xbin",
-                        "/vendor/bin"
-                    ).joinToString(":") + ":" + (System.getenv("PATH") ?: "/sbin:/system/sbin:/system/bin")),
+                    "PATH" to (pathPrefix + ":" + systemPath),
                     "HOME" to workspace.rootPath,
                     "TMPDIR" to directory.absolutePath,
                     "LC_ALL" to "C.UTF-8",
