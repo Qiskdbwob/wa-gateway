@@ -9,6 +9,8 @@ import com.example.agent.model.AgentRole
 import com.example.agent.storage.InMemoryAgentSessionRepository
 import com.example.agent.storage.entity.MemoryItemEntity
 import kotlinx.coroutines.runBlocking
+import java.util.Locale
+import java.util.TimeZone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -256,5 +258,68 @@ class Priority2MemoryTest {
         assertEquals(0, result.summarizedTurns)
         assertEquals(3, sessionRepo.getMessages(session.sessionId, 100).size)
         assertTrue(memory.getByType(MemoryItemEntity.TYPE_EPISODIC).isEmpty())
+    }
+
+    // ==========================================
+    // Local time awareness (system prompt)
+    // ==========================================
+
+    /**
+     * 2024-01-01T00:00:00Z — in Jakarta that is 07:00 on the 1st, so the block must show the
+     * device zone's hour, not UTC's.
+     */
+    private val newYearUtc = 1_704_067_200_000L
+
+    @Test
+    fun priority2_timeContextUsesTheDeviceZoneNotUtc() {
+        val jakarta = TimeZone.getTimeZone("Asia/Jakarta")
+        val context = ContextManager.timeContext(
+            now = newYearUtc,
+            zone = jakarta,
+            locale = Locale.US
+        )
+
+        assertTrue(context.startsWith("## Waktu sekarang"))
+        assertTrue(context.contains("UTC+07:00"))
+        assertTrue(context.contains("Asia/Jakarta"))
+        // Local wall clock (07:00), never the raw UTC hour (00:00).
+        assertTrue(context.contains("07:00"))
+        assertTrue(context.contains("2024"))
+        // The model is told the tool still exists for second precision / other zones.
+        assertTrue(context.contains("current_time"))
+    }
+
+    @Test
+    fun priority2_timeContextFormatsUtcAndNegativeOffsets() {
+        val utc = ContextManager.timeContext(newYearUtc, TimeZone.getTimeZone("UTC"), Locale.US)
+        assertTrue(utc.contains("UTC+00:00"))
+        assertTrue(utc.contains("00:00"))
+
+        // Kolkata is UTC+05:30 and New York (Jan) is UTC-05:00: both offsets must be exact.
+        val kolkata = ContextManager.timeContext(newYearUtc, TimeZone.getTimeZone("Asia/Kolkata"), Locale.US)
+        assertTrue(kolkata.contains("UTC+05:30"))
+        val newYork = ContextManager.timeContext(newYearUtc, TimeZone.getTimeZone("America/New_York"), Locale.US)
+        assertTrue(newYork.contains("UTC-05:00"))
+    }
+
+    @Test
+    fun priority2_buildSystemPromptKeepsTimeBlockAndMemorySections() {
+        val prompt = ContextManager.buildSystemPrompt(
+            ContextManager.timeContext(newYearUtc, TimeZone.getTimeZone("Asia/Jakarta"), Locale.US),
+            listOf(knowledge("k1", "Nama istri pengguna adalah Sinta")),
+            listOf(
+                MemoryItemEntity(
+                    id = "l1",
+                    type = MemoryItemEntity.TYPE_LEARNING,
+                    content = "Selalu balas dengan bahasa Indonesia",
+                    keywords = "",
+                    status = MemoryItemEntity.STATUS_ACTIVE
+                )
+            )
+        )
+
+        assertTrue(prompt.startsWith("## Waktu sekarang"))
+        assertTrue(prompt.contains("Pelajaran dari pengalaman sebelumnya"))
+        assertTrue(prompt.contains("Sinta"))
     }
 }

@@ -59,6 +59,7 @@ antar kontak tidak pernah tercampur.
 | Provider OpenAI-compatible + Echo fallback offline | ✅ |
 | Penyimpanan API key terenkripsi (Android Keystore, AES-256-GCM) | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
+| Kesadaran waktu lokal: hari/tanggal/jam perangkat disuntik ke system prompt tiap turn, plus tool `current_time` | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
 | Kontrol akses kontak: whitelist & blacklist (per nomor, dinormalisasi dari JID) | ✅ |
 | Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
@@ -346,8 +347,15 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   Android. GeckoView **belum** dipakai karena menuntut repository Maven Mozilla, toolchain Java 17
   untuk seluruh app, dan ±100 MB native library per ABI di atas gateway Go yang sudah ada;
   antarmukanya sengaja dibuat tipis agar GeckoView/driver lain bisa dipasang tanpa mengubah tool.
-* Satu sesi WebView hidup dipakai bersama agent dan pengguna: cookie tersimpan, jadi login tidak
-  perlu diulang. `browser_open` → `browser_read` (teks + daftar elemen `agx-N`) → `browser_click`
+* Satu sesi WebView hidup dipakai bersama agent dan pengguna. **Sesi login persisten**: cookie
+  disimpan oleh `CookieManager` aplikasi di direktori data privat app, bukan di dalam objek
+  WebView — jadi login sekali (oleh `browser_login` maupun manual oleh pengguna di tab Browser)
+  tetap berlaku untuk panggilan tool berikutnya, saat WebView dibuat ulang, bahkan setelah
+  aplikasi ditutup dan dibuka lagi. Setiap `browser_type` dengan `submit` dan `browser_click`
+  memanggil `CookieManager.flush()` supaya cookie login langsung tertulis ke disk. Yang
+  mengakhirinya hanya `browser_logout` (atau tombol logout di UI), yang menghapus cookie, cache,
+  form data, dan history.
+* Alur: `browser_open` → `browser_read` (teks + daftar elemen `agx-N`) → `browser_click`
   / `browser_type` (dengan `submit`) → `browser_scroll` → `browser_screenshot`.
 * **Login**: pengguna menyimpan akun per situs di Pengaturan → Browser (password dienkripsi
   `SecretCipher`), `browser_login` mengisi form login secara generik dan melaporkan jujur bila
@@ -360,6 +368,16 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   kerjanya di WhatsApp.
 * Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
   pengguna bahwa agent boleh mengendalikan sesi nyata.
+
+### Kesadaran waktu lokal (agent tahu "sekarang")
+
+* Di awal setiap turn, bridge menambahkan blok **“Waktu sekarang”** ke system prompt: hari,
+  tanggal, jam, offset UTC dan nama zona waktu perangkat (`TimeZone.getDefault()`), di-refresh
+  tiap turn sehingga tidak pernah basi. Jadi agent tahu jam berapa sekarang **tanpa** harus
+  memanggil tool lebih dulu, dan perhitungan jadwal/pengingat memakai hari yang benar.
+* Tool `builtin.current_time` tetap terdaftar dan aktif secara default untuk pertanyaan eksplisit
+  yang butuh presisi detik atau zona waktu lain (`timezone_offset_hours`).
+* Blok waktu selalu disuntik, termasuk saat memori jangka panjang sedang dimatikan.
 
 ## Batasan yang diketahui
 
@@ -385,6 +403,10 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   tersedia. Linux penuh (proot/rootfs) belum ada — lihat `DOC/reference/linux-sandbox/`.
 * Browser automation memakai WebView Android (bukan GeckoView) dan bergantung pada layout halaman;
   situs dengan anti-bot agresif bisa gagal — agent akan mengatakannya, bukan mengarang.
+* Sesi login browser bertahan di cookie store WebView (disk, privat app) — belum diverifikasi di
+  perangkat nyata melintasi restart aplikasi; situs yang sesinya berakhir di sisi server (atau
+  memakai token yang tidak disimpan sebagai cookie) tetap akan meminta login lagi. `browser_logout`
+  menghapus sesi dengan sengaja.
 * Shell persisten di layar Terminal hidup selama proses aplikasi hidup; belum ada
   keepalive/foreground service khusus terminal (gateway service yang menjaga proses).
 * `applicationId` masih memakai nilai bawaan template.

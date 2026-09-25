@@ -56,7 +56,9 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 ## 4. Tool & kemampuan agent
 
 - ✅ Tool System: `Tool` (id/name/description/inputSchema/permission/execute), `ToolRegistry`, `ToolResult`.
-- ✅ `current_time`.
+- ✅ `current_time` + **kesadaran waktu lokal**: blok "Waktu sekarang" (hari, tanggal, jam, offset
+  UTC, nama zona perangkat) disuntik ulang ke system prompt di setiap turn, jadi agent tahu jam
+  berapa sekarang tanpa perlu memanggil tool lebih dulu.
 - ✅ File I/O **hanya di dalam workspace**: `list_files, read_file, write_file, append_file,
   move_path, copy_path, delete_path, make_directory` (`delete_path` = CONFIRM/destruktif).
 - ✅ Workspace isolasi path absolut + guard anti `..` dan symlink escape (`Workspace.resolve`).
@@ -77,6 +79,12 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
   `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`, `browser_logout`
   (engine Android WebView di balik antarmuka `BrowserEngine`).
 - ✅ Serah terima captcha/2FA ke pengguna (`browser_ask_user` menunggu, bukan mengarang hasil).
+- ✅ **Sesi login browser persisten**: cookie disimpan `CookieManager` aplikasi di data privat app,
+  bukan di objek WebView. Login sekali (lewat `browser_login` atau manual di tab Browser) tetap
+  dipakai pada panggilan tool berikutnya, saat WebView dibuat ulang, dan setelah aplikasi
+  ditutup–dibuka lagi; `browser_type` dengan `submit` / `browser_click` memanggil
+  `CookieManager.flush()` agar cookie langsung tertulis ke disk. Sesi hanya dihapus oleh
+  `browser_logout`, yang membersihkan cookie + cache + form data + history.
 - 🟡 Web search baru **DuckDuckGo**; belum ada opsi Bing.
 - 🟡 `read_file` memotong di 16.000 karakter; pembacaan bertahap (offset/limit) belum ada.
 - 🟡 Browser memakai **WebView Android**, belum GeckoView (antarmuka `BrowserEngine` siap ditukar).
@@ -177,6 +185,17 @@ provider Anthropic native, unified search, transkripsi audio, transkrip media be
 
 Dokumen referensi untuk yang belum ada sudah disimpan di `DOC/reference/`
 (`linux-sandbox/`, `terminal/builtin-terminal.md`, `browser-automation.md`).
+
+## Catatan waktu & sesi
+
+* **Waktu:** blok waktu selalu ikut di setiap turn (tidak bergantung pada toggle memori jangka
+  panjang) dan dihitung dari `TimeZone.getDefault()` perangkat, sehingga pertanyaan "hari ini hari
+  apa?" atau penjadwalan tidak pernah memakai tanggal basi. Tool `current_time` tetap tersedia untuk
+  presisi detik atau zona waktu lain.
+* **Sesi browser:** persistensi berasal dari cookie store WebView di disk (privat app), bukan dari
+  objek WebView-nya, dan hal ini belum diverifikasi di perangkat nyata melintasi restart aplikasi;
+  situs yang mengakhiri sesi di sisi server (atau memakai token non-cookie) tetap bisa meminta login
+  ulang. Tombol logout di UI dan tool `browser_logout` menghapus sesi secara eksplisit.
 
 ## Catatan engine browser
 

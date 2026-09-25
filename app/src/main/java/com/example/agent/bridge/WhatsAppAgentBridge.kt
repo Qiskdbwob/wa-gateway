@@ -902,9 +902,9 @@ class WhatsAppAgentBridge private constructor(
         }
 
         try {
-            // Priority 2 — long-term memory (RAG) + active learnings are folded into the
+            // Local clock + Priority 2 memory (RAG) + active learnings are folded into the
             // system prompt for this turn only.
-            val effectivePrompt = buildMemoryAwarePrompt(agentLoop.agent.systemPrompt, content)
+            val effectivePrompt = buildEffectivePrompt(agentLoop.agent.systemPrompt, content)
             val result = agentLoop.processInput(
                 input = input,
                 onProgress = { progress ->
@@ -951,19 +951,29 @@ class WhatsAppAgentBridge private constructor(
     }
 
     // ==================================================================================
-    // Priority 2 — memory context injected into every turn
+    // Per-turn system prompt: local clock + Priority 2 memory context
     // ==================================================================================
 
-    /** Builds the effective system prompt with RAG memories + active learnings. */
-    private suspend fun buildMemoryAwarePrompt(basePrompt: String, userMessage: String): String {
-        if (!_longTermMemoryEnabled.value) return basePrompt
+    /**
+     * Builds the effective system prompt for a single turn:
+     *
+     *   persona/agent prompt
+     *   + current local date & time on the device
+     *   + RAG memories relevant to the message + active learnings (Priority 2)
+     *
+     * The clock block is refreshed every turn and is *always* included — a model cannot know
+     * "now" on its own — while the memory/learning sections honour the memory toggle.
+     */
+    private suspend fun buildEffectivePrompt(basePrompt: String, userMessage: String): String {
+        val timedPrompt = basePrompt.trim() + "\n\n" + ContextManager.timeContext()
+        if (!_longTermMemoryEnabled.value) return timedPrompt
         return try {
             val memories = memoryRepository.recall(userMessage, limit = 5)
             val learnings = memoryRepository.getByType(MemoryItemEntity.TYPE_LEARNING)
                 .filter { it.status == MemoryItemEntity.STATUS_ACTIVE }
-            ContextManager.buildSystemPrompt(basePrompt, memories, learnings)
+            ContextManager.buildSystemPrompt(timedPrompt, memories, learnings)
         } catch (_: Exception) {
-            basePrompt
+            timedPrompt
         }
     }
 
@@ -1301,9 +1311,9 @@ class WhatsAppAgentBridge private constructor(
         if (!wasEnabled) agentLoop.agent = agentLoop.agent.copy(enabled = true)
 
         return try {
-            // Memory-aware prompt is scoped to this turn via systemPromptOverride, so two
-            // concurrent chats can never see each other's recalled memories.
-            val effectivePrompt = buildMemoryAwarePrompt(agentLoop.agent.systemPrompt, prompt)
+            // Local clock + memory-aware prompt is scoped to this turn via systemPromptOverride,
+            // so two concurrent chats can never see each other's recalled memories.
+            val effectivePrompt = buildEffectivePrompt(agentLoop.agent.systemPrompt, prompt)
             val input = AgentInput(
                 conversationId = conversationId,
                 senderId = "user",

@@ -36,6 +36,14 @@ import kotlin.coroutines.resume
  * tool calls, which is what makes login + multi-step flows (type, click, submit) work. While
  * the Browser screen is open the same instance is attached to the UI so the user can solve a
  * captcha or finish a 2FA step by hand.
+ *
+ * Session persistence: the cookie jar belongs to the app-wide [CookieManager], not to this
+ * WebView instance, and WebView stores it in the app's private data directory. So a login done
+ * once (by the agent via `browser_login`, or by the user in the Browser screen) is reused for
+ * later tool calls, for a recreated WebView, and across app restarts — until the app is cleared
+ * or the agent calls `browser_logout` / [clearSession], which wipes cookies, cache and form
+ * data. [typeText] with `submit = true` and every [click] flush the jar to disk immediately so a
+ * process kill right after login cannot lose it.
  */
 @SuppressLint("SetJavaScriptEnabled")
 class WebViewBrowserEngine(
@@ -180,7 +188,12 @@ class WebViewBrowserEngine(
                 false,
                 error = "Elemen $ref tidak ada lagi di halaman. Ambil snapshot baru (browser_read) lalu ulangi."
             )
-            else -> BrowserActionResult(true, url = currentUrl(), detail = "Elemen $ref diklik.")
+            else -> {
+                // A click can complete a login or an "remember me" consent: make sure the cookie
+                // jar hits disk before anything can kill the process.
+                persistCookies()
+                BrowserActionResult(true, url = currentUrl(), detail = "Elemen $ref diklik.")
+            }
         }
     }
 
@@ -220,11 +233,16 @@ class WebViewBrowserEngine(
                 false,
                 error = "Elemen $ref tidak ada lagi di halaman. Ambil snapshot baru (browser_read) lalu ulangi."
             )
-            else -> BrowserActionResult(
-                true,
-                url = currentUrl(),
-                detail = if (submit) "Teks dikirim ke $ref dan form disubmit." else "Teks diketik ke $ref."
-            )
+            else -> {
+                // Submitting a form is the moment a session cookie is written (login, 2FA
+                // confirmation, "remember this device"): persist it right away.
+                if (submit) persistCookies()
+                BrowserActionResult(
+                    true,
+                    url = currentUrl(),
+                    detail = if (submit) "Teks dikirim ke $ref dan form disubmit." else "Teks diketik ke $ref."
+                )
+            }
         }
     }
 
@@ -281,6 +299,25 @@ class WebViewBrowserEngine(
     override suspend fun pageTitle(): String =
         withContext(mainDispatcher) { webView?.title.orEmpty() }
 
+    /**
+     * Flushes the shared cookie jar to disk. WebView also flushes it periodically, but doing it
+     * ourselves after a submit keeps a freshly created session safe from an immediate process kill.
+     */
+    private suspend fun persistCookies() {
+        withContext(mainDispatcher) {
+            try {
+                CookieManager.getInstance().flush()
+            } catch (_: Exception) {
+                // Nothing to do: the jar is still flushed by WebView on its own schedule.
+            }
+        }
+    }
+
+    /**
+     * Drops the whole browsing session: cookies, cache, form data and history. This is the
+     * explicit logout path (`browser_logout`), so the next visit is a clean, logged-out one.
+     * A plain [dispose] (process/view teardown) never touches the cookie jar.
+     */
     override suspend fun clearSession() {
         withContext(mainDispatcher) {
             CookieManager.getInstance().removeAllCookies(null)
@@ -292,6 +329,7 @@ class WebViewBrowserEngine(
         }
     }
 
+    /** Releases the view. The cookie jar stays on disk, so the next session is still logged in. */
     override fun dispose() {
         val view = webView ?: return
         webView = null
