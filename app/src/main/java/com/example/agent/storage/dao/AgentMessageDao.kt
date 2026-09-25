@@ -31,4 +31,8 @@ interface AgentMessageDao {
     /** Compact support: removes messages already folded into a summary. */
     @Query("DELETE FROM agent_messages WHERE sessionId = :sessionId AND timestamp <= :upTo")
     suspend fun deleteMessagesUpTo(sessionId: String, upTo: Long)
+
+    /** Unified search: free-text scan over every stored turn, newest first. */
+    @Query("SELECT * FROM agent_messages WHERE content LIKE '%' || :term || '%' ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun searchMessages(term: String, limit: Int): List<AgentMessageEntity>
 }

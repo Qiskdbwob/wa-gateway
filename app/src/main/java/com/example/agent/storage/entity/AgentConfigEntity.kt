@@ -11,6 +11,11 @@ data class AgentConfigEntity(
     val useEchoFallback: Boolean = true,
     val baseUrl: String = "https://api.openai.com/v1",
     val apiKey: String = "",
+    /**
+     * Extra keys rotated with [apiKey] when a key hits its rate limit/quota ("keys pool").
+     * Stored encrypted (SecretCipher) as a newline-separated blob, never plaintext.
+     */
+    val apiKeys: String = "",
     val modelId: String = "gpt-4o-mini",
     val systemPrompt: String = "You are an intelligent, polite, and helpful AI assistant responding via WhatsApp. Keep responses concise, natural, and formatted nicely for WhatsApp.",
     // --- Priority 1: contact access control ---------------------------------------

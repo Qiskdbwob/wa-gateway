@@ -78,6 +78,7 @@ fun SettingsScreen(
     val browserUsernameInput by viewModel.browserUsernameInput.collectAsState()
     val browserPasswordInput by viewModel.browserPasswordInput.collectAsState()
     val apiKey by viewModel.agentApiKey.collectAsState()
+    val apiKeyPool by viewModel.agentApiKeyPool.collectAsState()
     val modelId by viewModel.agentModelId.collectAsState()
     val systemPrompt by viewModel.agentSystemPrompt.collectAsState()
     val useEchoFallback by viewModel.useEchoFallback.collectAsState()
@@ -220,6 +221,28 @@ fun SettingsScreen(
                                 contentDescription = if (showApiKey) "Sembunyikan" else "Tampilkan"
                             )
                         }
+                    }
+                )
+
+                // Keys pool: extra keys rotated when the primary key is rate-limited/quota-ed.
+                OutlinedTextField(
+                    value = apiKeyPool,
+                    onValueChange = { viewModel.agentApiKeyPool.value = it },
+                    label = { Text("Keys Pool (opsional)") },
+                    placeholder = { Text("Satu kunci per baris\nsk-...\nsk-...") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_api_key_pool"),
+                    shape = RoundedCornerShape(10.dp),
+                    minLines = 2,
+                    maxLines = 5,
+                    supportingText = {
+                        Text(
+                            text = "Dipakai bergiliran dengan API Key di atas. " +
+                                "Bila satu kunci kena limit (401/402/403/429), percobaan berikutnya " +
+                                "otomatis memakai kunci lain.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 )
 

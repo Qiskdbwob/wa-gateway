@@ -47,4 +47,15 @@ interface MemoryItemDao {
 
     @Query("DELETE FROM memory_items WHERE type = :type")
     suspend fun deleteByType(type: String)
+
+    /**
+     * Unified search: matches the memory body or its stored keywords. Obsolete rows are skipped
+     * so a discarded learning cannot come back as a search hit.
+     */
+    @Query(
+        "SELECT * FROM memory_items WHERE status != 'obsolete' AND " +
+            "(content LIKE '%' || :term || '%' OR keywords LIKE '%' || :term || '%') " +
+            "ORDER BY updatedAt DESC LIMIT :limit"
+    )
+    suspend fun searchItems(term: String, limit: Int): List<MemoryItemEntity>
 }

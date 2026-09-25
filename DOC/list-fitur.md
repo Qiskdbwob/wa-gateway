@@ -51,7 +51,9 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 - 🟡 Model probe belum punya tombol di UI (logikanya ada di `ModelRouter`, belum diekspos ke layar).
 - 🟡 Konfigurasi combo/urutan fallback belum ada formnya di Pengaturan (chain di-set dari kode/router).
 - ❌ Provider Anthropic Claude native.
-- ❌ Keys pool (banyak API key dirotasi).
+- ✅ Keys pool: field "Keys Pool" di Pengaturan (satu kunci per baris), dipakai bergiliran dengan
+  kunci utama; rotasi otomatis saat kunci kena 401/402/403/429, sedangkan error 5xx/timeout tetap
+  ditangani retry/fallback. Kunci tambahan disimpan terenkripsi (`SecretCipher`).
 
 ## 4. Tool & kemampuan agent
 
@@ -70,6 +72,7 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 - ✅ Council: `council` (2 debater + 1 moderator, dibatasi timeout 120 detik).
 - ✅ Scheduler tool: `schedule_task`.
 - ✅ Permission tool (SAFE / AUTO_SAFE / CONFIRM) + approval destruktif via chat/UI.
+- ✅ Unified search: `search` (chat / memory / tasks / files / tools) — lihat bagian 5.
 - ✅ **Terminal built-in**: `run_command` (shell perangkat `/system/bin/sh` + toybox, `cwd` di workspace)
   dan `terminal_info` (laporan biner yang benar-benar ada: sh/bash/curl/wget/python3/git/gh/node).
   Approval **per perintah** lewat `ShellPolicy`: install/upgrade/hapus paket, `rm`, `sudo`, `kill`,
@@ -105,8 +108,11 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 - 🟡 "Memory episodic + refleksi berkala (generative agents)": refleksi berjalan saat model memanggil
   tool `reflect`, belum ada loop refleksi otomatis/periodik terjadwal.
 - 🟡 Knowledge Base = memori KNOWLEDGE (belum ada import/export dokumen eksternal).
-- ❌ Unified search `search(query, scope)` untuk `session / memory / learning / skills / tools / knowledge`.
-  Yang ada baru `recall_memory` (memori) dan `web_search` (web).
+- ✅ Unified search `search(query, scope, limit)` (`builtin.search`, AUTO_SAFE, lokal tanpa jaringan)
+  untuk scope `chat / memory / tasks / files / tools` (plus `all`). Ranking leksikal: frasa di judul
+  > frasa di isi > kata per kata, seri diputus yang terbaru; satu huruf tidak menghasilkan apa-apa
+  supaya tidak membanjiri konteks. Hasil menyertakan id/path untuk ditindaklanjuti.
+  Catatan jujur: scope `skills` belum ada karena Skills (markdown) belum diimplementasikan.
 - ❌ Learning dalam format skill markdown / aturan berkas yang bisa dibaca ulang sebagai prosedur.
 
 ## 6. Multi-agent collaboration
@@ -177,11 +183,13 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 | — | Terminal built-in (agent bisa curl/wget/bash/python) | ✅ (shell perangkat; sandbox proot belum) |
 | — | Browser automation (post ke media sosial, captcha/2FA ke pengguna) | ✅ (WebView Android, bukan GeckoView) |
 | — | Kirim hasil kerja agent (file/screenshot) ke chat WhatsApp | ✅ |
+| — | Keys pool (rotasi banyak API key saat rate limit/quota) | ✅ |
+| — | Unified search lintas memori, chat, task, file & daftar tool | ✅ |
 
 ## Yang belum ada (dan sengaja tidak dipalsukan)
 
-Sandbox Linux penuh (proot/rootfs), MCP connector, skill markdown universal, keys pool,
-provider Anthropic native, unified search, transkripsi audio, transkrip media besar.
+Sandbox Linux penuh (proot/rootfs), MCP connector, skill markdown universal,
+provider Anthropic native, transkripsi audio, transkrip media besar.
 
 Dokumen referensi untuk yang belum ada sudah disimpan di `DOC/reference/`
 (`linux-sandbox/`, `terminal/builtin-terminal.md`, `browser-automation.md`).

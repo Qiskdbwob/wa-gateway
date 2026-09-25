@@ -58,6 +58,8 @@ antar kontak tidak pernah tercampur.
 | Model probe (`1 + 1 =`) untuk cek availability & latency | ✅ |
 | Provider OpenAI-compatible + Echo fallback offline | ✅ |
 | Penyimpanan API key terenkripsi (Android Keystore, AES-256-GCM) | ✅ |
+| Keys pool: banyak API key dirotasi saat satu kunci kena limit/quota (401/402/403/429) | ✅ |
+| Unified search: satu tool `search` untuk memori, riwayat chat, task, file workspace & daftar tool | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Kesadaran waktu lokal: hari/tanggal/jam perangkat disuntik ke system prompt tiap turn, plus tool `current_time` | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
@@ -369,6 +371,23 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 * Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
   pengguna bahwa agent boleh mengendalikan sesi nyata.
 
+### Keys pool (banyak API key) & unified search
+
+* **Keys pool.** Pengaturan → Model & Provider kini punya field **“Keys Pool (opsional)”**: satu
+  kunci per baris, dipakai bergiliran dengan API Key utama. Kunci awalnya dirotasi (round-robin)
+  supaya beban tidak selalu jatuh ke kunci pertama, dan bila sebuah kunci gagal karena hal yang
+  memang soal kunci — `401`/`402`/`403` (ditolak/tagihan) atau `429` (rate limit/quota) — percobaan
+  berikutnya otomatis memakai kunci lain. Kegagalan lain (5xx, timeout, 400) **tidak** menghabiskan
+  kunci: itu tetap ditangani retry/fallback Agent Loop seperti sebelumnya. Bila semua kunci habis,
+  pesan error menyebut kunci ke berapa yang gagal (`key 2/3`) sehingga penyebabnya jelas di log.
+  Kunci tambahan disimpan terenkripsi (`SecretCipher`) seperti kunci utama.
+* **Unified search** (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
+  chat, memori jangka panjang, task terjadwal & sub-agent, file workspace, dan daftar tool. Ranking
+  leksikal yang bisa dijelaskan: frasa yang cocok di judul > frasa di isi > kecocokan kata per kata,
+  seri diputus oleh yang terbaru; query satu huruf sengaja tidak menghasilkan apa-apa. Tujuannya
+  mengurangi round-trip tool: satu panggilan memberi konteks + id/path yang bisa langsung ditindak-
+  lanjuti (`recall_memory`, `read_file`, atau tool terkait).
+
 ### Kesadaran waktu lokal (agent tahu "sekarang")
 
 * Di awal setiap turn, bridge menambahkan blok **“Waktu sekarang”** ke system prompt: hari,
@@ -387,7 +406,7 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 * Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
   dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). Bila API key vision
   belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
-* Tool bawaan saat ini: `current_time`, 8 file tool (workspace-locked, `delete_path` = CONFIRM),
+* Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
   `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,

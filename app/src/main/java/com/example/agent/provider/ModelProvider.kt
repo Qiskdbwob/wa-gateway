@@ -32,8 +32,64 @@ interface ModelProvider {
 data class ProviderConfig(
     val baseUrl: String = "https://api.openai.com/v1",
     val apiKey: String = "",
-    val modelId: String = "gpt-4o-mini"
-)
+    val modelId: String = "gpt-4o-mini",
+    /**
+     * Extra keys rotated with [apiKey] — a "keys pool". One key hitting its rate limit/quota no
+     * longer fails the turn: the request is retried with the next key (see [ProviderKeyPool]).
+     */
+    val apiKeys: List<String> = emptyList()
+) {
+    /** All distinct, non-blank keys, primary first. */
+    fun keyPool(): List<String> = ProviderKeyPool.normalize(listOf(apiKey) + apiKeys)
+}
+
+/**
+ * Pure helpers for multi-key rotation. Kept separate from the HTTP code so the policy (which
+ * failures are key-specific, which order to try keys in) is unit-testable on the JVM.
+ */
+object ProviderKeyPool {
+
+    /** Trims, drops blanks and de-duplicates while keeping the caller's order. */
+    fun normalize(keys: List<String>): List<String> =
+        keys.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+    /**
+     * Parses a user-supplied pool blob: one key per line, `,` or `;` also accepted. Duplicates and
+     * blanks are dropped, so pasting the same key twice can never burn two rotation slots.
+     */
+    fun parse(raw: String): List<String> =
+        normalize(raw.split('\n', ',', ';'))
+
+    /** Renders a pool back to the one-key-per-line form the Settings field shows. */
+    fun format(keys: List<String>): String = normalize(keys).joinToString("\n")
+
+    /**
+     * Only key-scoped failures are worth another key: 401/403 (key rejected), 402 (billing) and
+     * 429 (rate limit/quota). A 5xx or a network timeout is the server/network, not the key, and
+     * is left to the existing retry/fallback policy so we do not spray bad requests everywhere.
+     */
+    fun shouldRotateOn(status: Int): Boolean = status == 401 || status == 402 || status == 403 || status == 429
+
+    /**
+     * True when the pool should try the next key: the failure is key-scoped *and* there is a key
+     * left to try. Exhausting the pool hands the error back to the Agent Loop's retry/fallback.
+     */
+    fun nextKeyAfterFailure(status: Int, attempted: Int, poolSize: Int): Boolean =
+        shouldRotateOn(status) && attempted < poolSize
+
+    /**
+     * Rotates the starting point so calls spread over the pool instead of always using the first
+     * key (which is what makes a pool useful under per-key rate limits).
+     */
+    fun rotated(keys: List<String>, startIndex: Int): List<String> {
+        if (keys.size <= 1) return keys
+        val start = ((startIndex % keys.size) + keys.size) % keys.size
+        return keys.drop(start) + keys.take(start)
+    }
+}
+
+/** HTTP failure from a model endpoint; [status] lets callers decide (rotate key, retry, give up). */
+class ModelHttpException(val status: Int, message: String) : IOException(message)
 
 class OpenAiCompatibleProvider(
     private val configProvider: () -> ProviderConfig,
@@ -47,13 +103,16 @@ class OpenAiCompatibleProvider(
     override val id: String = "openai-compatible"
     override val name: String = "OpenAI Compatible"
 
+    /** Rotates the pool's starting key so a pool actually spreads load instead of always using #1. */
+    private val keyRotation = java.util.concurrent.atomic.AtomicInteger(0)
+
     override suspend fun generate(request: ModelRequest): Result<ModelResponse> = withContext(Dispatchers.IO) {
         val config = configProvider()
-        val apiKey = config.apiKey.trim()
+        val keys = ProviderKeyPool.rotated(config.keyPool(), keyRotation.getAndIncrement())
         val baseUrl = config.baseUrl.trim().trimEnd('/')
         val model = request.modelId?.trim()?.ifEmpty { null } ?: config.modelId.trim().ifEmpty { "gpt-4o-mini" }
 
-        if (apiKey.isEmpty()) {
+        if (keys.isEmpty()) {
             return@withContext Result.failure(
                 IllegalStateException("API key is not configured. Please set an API key in Agent Settings.")
             )
@@ -110,33 +169,65 @@ class OpenAiCompatibleProvider(
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = jsonBody.toString().toRequestBody(mediaType)
 
-            val httpRequest = Request.Builder()
-                .url(endpoint)
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .post(requestBody)
-                .build()
+            // Keys pool: walk the pool only while the failure belongs to the key itself
+            // (401/402/403/429). Any other failure keeps the existing single-shot behaviour so the
+            // Agent Loop's retry/fallback policy stays in charge.
+            var attempted = 0
+            var lastFailure: Throwable? = null
+            for (key in keys) {
+                attempted++
+                val httpRequest = Request.Builder()
+                    .url(endpoint)
+                    .addHeader("Authorization", "Bearer $key")
+                    .addHeader("Content-Type", "application/json")
+                    .post(requestBody)
+                    .build()
 
-            val httpResponse = client.newCall(httpRequest).execute()
-            val latencyMs = System.currentTimeMillis() - startTime
-            val responseBody = httpResponse.body?.string() ?: ""
-
-            if (!httpResponse.isSuccessful) {
-                val errorDetail = try {
-                    val errJson = JSONObject(responseBody)
-                    errJson.optJSONObject("error")?.optString("message") ?: responseBody
-                } catch (_: Exception) {
-                    responseBody.take(200)
+                val httpResponse = try {
+                    client.newCall(httpRequest).execute()
+                } catch (e: Exception) {
+                    return@withContext Result.failure(e)
                 }
-                return@withContext Result.failure(
-                    IOException("HTTP ${httpResponse.code} error from $name: $errorDetail")
-                )
+                val latencyMs = System.currentTimeMillis() - startTime
+                val responseBody = httpResponse.body?.string() ?: ""
+
+                if (!httpResponse.isSuccessful) {
+                    val errorDetail = try {
+                        val errJson = JSONObject(responseBody)
+                        errJson.optJSONObject("error")?.optString("message") ?: responseBody
+                    } catch (_: Exception) {
+                        responseBody.take(200)
+                    }
+                    val suffix = if (keys.size > 1) " (key $attempted/${keys.size})" else ""
+                    val failure = ModelHttpException(
+                        httpResponse.code,
+                        "HTTP ${httpResponse.code} error from $name$suffix: $errorDetail"
+                    )
+                    lastFailure = failure
+                    if (ProviderKeyPool.nextKeyAfterFailure(httpResponse.code, attempted, keys.size)) {
+                        continue
+                    }
+                    return@withContext Result.failure(failure)
+                }
+
+                return@withContext parseSuccess(responseBody, model, latencyMs)
             }
 
+            return@withContext Result.failure(
+                lastFailure ?: IllegalStateException("API key is not configured. Please set an API key in Agent Settings.")
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** Turns a 2xx body into a [ModelResponse]; shared by every key in the pool. */
+    private fun parseSuccess(responseBody: String, model: String, latencyMs: Long): Result<ModelResponse> {
+        return try {
             val resJson = JSONObject(responseBody)
             val choices = resJson.optJSONArray("choices")
             if (choices == null || choices.length() == 0) {
-                return@withContext Result.failure(IOException("Empty choices array received from model"))
+                return Result.failure(IOException("Empty choices array received from model"))
             }
 
             val firstChoice = choices.getJSONObject(0)
@@ -148,7 +239,7 @@ class OpenAiCompatibleProvider(
             // A tool-call reply legitimately has no text content, so only a reply with
             // neither text nor tool calls counts as the "empty response" failure.
             if (content.isEmpty() && toolCalls.isEmpty()) {
-                return@withContext Result.failure(IOException("Received empty response content from model"))
+                return Result.failure(IOException("Received empty response content from model"))
             }
 
             val usageObj = resJson.optJSONObject("usage")

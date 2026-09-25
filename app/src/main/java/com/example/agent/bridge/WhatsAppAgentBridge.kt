@@ -22,6 +22,7 @@ import com.example.agent.provider.ModelProvider
 import com.example.agent.provider.OpenAiCompatibleProvider
 import com.example.agent.provider.OpenAiVisionProvider
 import com.example.agent.provider.ProviderConfig
+import com.example.agent.provider.ProviderKeyPool
 import com.example.agent.provider.VisionProvider
 import com.example.agent.router.ModelProbeResult
 import com.example.agent.router.ModelRouter
@@ -47,6 +48,8 @@ import com.example.agent.tool.ToolConversation
 import com.example.agent.tool.ToolRegistry
 import com.example.agent.tool.WebFetchTool
 import com.example.agent.tool.WebSearchTool
+import com.example.agent.search.LocalSearchSources
+import com.example.agent.tool.SearchEverythingTool
 import com.example.agent.tool.CouncilTool
 import com.example.agent.tool.BrowserClickTool
 import com.example.agent.tool.BrowserClearSessionTool
@@ -332,7 +335,8 @@ class WhatsAppAgentBridge private constructor(
                     providerConfig.value = ProviderConfig(
                         baseUrl = saved.baseUrl,
                         apiKey = SecretCipher.decrypt(saved.apiKey),
-                        modelId = saved.modelId
+                        modelId = saved.modelId,
+                        apiKeys = ProviderKeyPool.parse(SecretCipher.decrypt(saved.apiKeys))
                     )
                     systemPrompt.value = saved.systemPrompt
                     agentLoop.agent = agentLoop.agent.copy(
@@ -378,6 +382,16 @@ class WhatsAppAgentBridge private constructor(
         // Priority 2 — memory tools.
         registry.register(RememberTool(memoryRepository))
         registry.register(RecallMemoryTool(memoryRepository))
+        // Unified search — one call across memory, chat, tasks, files and the tool list.
+        registry.register(
+            SearchEverythingTool(
+                LocalSearchSources(
+                    database = AgentDatabase.getInstance(context),
+                    toolRegistry = { toolRegistry },
+                    workspace = workspace
+                )
+            )
+        )
         // Priority 6 — subagent + reflection.
         registry.register(
             DelegateTaskTool { spec, conversationId ->
@@ -639,11 +653,22 @@ class WhatsAppAgentBridge private constructor(
         persistConfig()
     }
 
-    fun updateConfig(baseUrl: String, apiKey: String, modelId: String, prompt: String) {
+    /**
+     * Saves the model configuration. [apiKeyPool] is the optional "keys pool" blob (one extra key
+     * per line) that the provider rotates through when a key hits its rate limit or quota.
+     */
+    fun updateConfig(
+        baseUrl: String,
+        apiKey: String,
+        modelId: String,
+        prompt: String,
+        apiKeyPool: String = ""
+    ) {
         providerConfig.value = ProviderConfig(
             baseUrl = baseUrl.trim(),
             apiKey = apiKey.trim(),
-            modelId = modelId.trim()
+            modelId = modelId.trim(),
+            apiKeys = ProviderKeyPool.parse(apiKeyPool)
         )
         systemPrompt.value = prompt.trim()
         agentLoop.agent = agentLoop.agent.copy(
@@ -653,6 +678,12 @@ class WhatsAppAgentBridge private constructor(
         updateModelRouter()
         persistConfig()
     }
+
+    /** One-key-per-line rendering of the pool, for the Settings field. */
+    val apiKeyPoolText: String get() = ProviderKeyPool.format(providerConfig.value.apiKeys)
+
+    /** How many distinct keys the provider may rotate through (1 = single key, no pool). */
+    val apiKeyPoolSize: Int get() = providerConfig.value.keyPool().size
 
     suspend fun probeCurrentModel(): ModelProbeResult {
         val target = ModelTarget(
@@ -691,6 +722,7 @@ class WhatsAppAgentBridge private constructor(
                         useEchoFallback = _useEchoFallback.value,
                         baseUrl = providerConfig.value.baseUrl,
                         apiKey = SecretCipher.encrypt(providerConfig.value.apiKey),
+                        apiKeys = SecretCipher.encrypt(ProviderKeyPool.format(providerConfig.value.apiKeys)),
                         modelId = providerConfig.value.modelId,
                         systemPrompt = systemPrompt.value,
                         whitelistMode = _whitelistMode.value,

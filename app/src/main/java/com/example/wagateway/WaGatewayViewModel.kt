@@ -14,6 +14,7 @@ import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentSession
 import com.example.agent.model.Tool
+import com.example.agent.provider.ProviderKeyPool
 import com.example.agent.storage.ContactAccessRepository
 import com.example.agent.storage.entity.AgentTaskEntity
 import com.example.agent.storage.entity.ApprovalRequestEntity
@@ -77,6 +78,8 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     val agentSystemPrompt = MutableStateFlow(agentBridge.systemPrompt.value)
     val agentBaseUrl = MutableStateFlow(agentBridge.providerConfig.value.baseUrl)
     val agentApiKey = MutableStateFlow(agentBridge.providerConfig.value.apiKey)
+    /** Optional keys pool: one extra API key per line, rotated on rate limit/quota. */
+    val agentApiKeyPool = MutableStateFlow(agentBridge.apiKeyPoolText)
     val agentModelId = MutableStateFlow(agentBridge.providerConfig.value.modelId)
     val useEchoFallback: StateFlow<Boolean> = agentBridge.useEchoFallback
 
@@ -269,6 +272,7 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
             agentBridge.providerConfig.collect { config ->
                 agentBaseUrl.value = config.baseUrl
                 agentApiKey.value = config.apiKey
+                agentApiKeyPool.value = ProviderKeyPool.format(config.apiKeys)
                 agentModelId.value = config.modelId
             }
         }
@@ -386,9 +390,15 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
             baseUrl = agentBaseUrl.value,
             apiKey = agentApiKey.value,
             modelId = agentModelId.value,
-            prompt = agentSystemPrompt.value
+            prompt = agentSystemPrompt.value,
+            apiKeyPool = agentApiKeyPool.value
         )
-        _sendFeedback.value = "Pengaturan Agent berhasil disimpan ke Room Database!"
+        val poolSize = agentBridge.apiKeyPoolSize
+        _sendFeedback.value = if (poolSize > 1) {
+            "Pengaturan Agent disimpan. Keys pool aktif: $poolSize kunci akan dirotasi."
+        } else {
+            "Pengaturan Agent berhasil disimpan ke Room Database!"
+        }
     }
 
     fun selectSession(sessionId: String?) {

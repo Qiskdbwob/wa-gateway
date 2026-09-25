@@ -34,7 +34,7 @@ import com.example.agent.storage.entity.ScheduledTaskEntity
         ScheduledTaskEntity::class,
         AgentTaskEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AgentDatabase : RoomDatabase() {
@@ -137,6 +137,16 @@ abstract class AgentDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 -> v4: keys pool (extra API keys rotated on rate limit/quota). The column is a
+         * blank encrypted blob by default, i.e. single-key behaviour is unchanged.
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `apiKeys` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): AgentDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -144,7 +154,7 @@ abstract class AgentDatabase : RoomDatabase() {
                     AgentDatabase::class.java,
                     "agent_database.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 .also { INSTANCE = it }
             }
