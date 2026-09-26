@@ -3,6 +3,7 @@ package com.example.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -130,6 +131,10 @@ fun MainAppScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
+                    // The keyboard shrinks the window (adjustResize), but without this the IME
+                    // overlaps the content and pushes input rows / save buttons below the fold —
+                    // reported on the Memory > Knowledge tab when typing a long fact.
+                    .imePadding()
             ) {
                 when (currentTab) {
                     MainTab.HOME -> {

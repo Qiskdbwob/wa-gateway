@@ -11,13 +11,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Chat
@@ -141,6 +144,13 @@ enum class MemoryCategory(val label: String, val icon: ImageVector) {
 
     LEARNING("Learning", Icons.Default.Lightbulb)
 }
+
+/**
+ * Soft cap for a manually saved fact, shown live under the input. The model reads knowledge
+ * memories back into its context, so a page-length paste would eat the budget of a whole turn;
+ * the counter turns red past the cap instead of silently truncating or rejecting the text.
+ */
+private const val MAX_MEMORY_INPUT_CHARS = 4_000
 
 @Composable
 fun MemoryScreen(
@@ -422,6 +432,9 @@ fun MemoryScreen(
                 }
 
                 MemoryCategory.KNOWLEDGE -> {
+                    // The input card is pinned at the top and only the content below scrolls, so a
+                    // long fact being typed never pushes its own "Simpan Memori" button (or the
+                    // field itself) out of the viewport — the bug reported on this tab.
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -442,50 +455,75 @@ fun MemoryScreen(
                                     onValueChange = { viewModel.newMemoryInput.value = it },
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .heightIn(max = 160.dp)
                                         .testTag("memory_input"),
                                     placeholder = { Text("Contoh: Nama istri saya Sari, ulang tahunnya 12 Maret.") },
                                     minLines = 2
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Button(
-                                    onClick = { viewModel.saveMemory() },
-                                    modifier = Modifier.testTag("memory_save_button")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Simpan Memori")
+                                    Text(
+                                        text = "${newMemoryInput.length} karakter",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (newMemoryInput.length > MAX_MEMORY_INPUT_CHARS) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                    Button(
+                                        onClick = { viewModel.saveMemory() },
+                                        enabled = newMemoryInput.isNotBlank(),
+                                        modifier = Modifier.testTag("memory_save_button")
+                                    ) {
+                                        Text("Simpan Memori")
+                                    }
                                 }
                             }
                         }
 
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    text = "System Prompt & Persona",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = systemPrompt,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "System Prompt & Persona",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = systemPrompt,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
-                        }
 
-                        if (knowledgeMemories.isNotEmpty()) {
-                            Text(
-                                text = "Fakta tersimpan (${knowledgeMemories.size})",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            knowledgeMemories.forEach { item ->
-                                MemoryItemCard(item = item, onDelete = { viewModel.deleteMemory(item.id) })
+                            if (knowledgeMemories.isNotEmpty()) {
+                                Text(
+                                    text = "Fakta tersimpan (${knowledgeMemories.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                knowledgeMemories.forEach { item ->
+                                    MemoryItemCard(item = item, onDelete = { viewModel.deleteMemory(item.id) })
+                                }
                             }
                         }
                     }
