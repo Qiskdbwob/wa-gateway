@@ -30,7 +30,7 @@ import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.scheduler.SchedulerEngine
-import com.example.agent.scheduler.SchedulerWork
+import com.example.agent.scheduler.SchedulerWorker
 import com.example.agent.storage.ContactAccessRepository
 import com.example.agent.storage.RoomAgentSessionRepository
 import com.example.agent.storage.SecretCipher
@@ -401,7 +401,7 @@ class WhatsAppAgentBridge private constructor(
                 // Start the scheduler ticker (checks every 60 s) and register the WorkManager
                 // wake-up so due tasks still run after the process was killed.
                 SchedulerEngine.startTicking(scheduler, scope = scope)
-                SchedulerWork.enqueue(context)
+                SchedulerWorker.enqueue(context)
                 // Make sure the optional periodic self-reflection exists / is paused as configured.
                 syncAutoReflection()
                 refreshSkills()
