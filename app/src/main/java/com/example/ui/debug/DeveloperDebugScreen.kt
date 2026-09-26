@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Button
@@ -35,6 +37,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -71,6 +74,9 @@ fun DeveloperDebugScreen(
     val testPrompt by viewModel.testPromptText.collectAsState()
     val testResponse by viewModel.testResponseText.collectAsState()
     val isTesting by viewModel.isTestingAgent.collectAsState()
+    val probeResult by viewModel.probeResult.collectAsState()
+    val isProbing by viewModel.isProbing.collectAsState()
+    val modelMetrics by viewModel.modelMetrics.collectAsState()
     val agentLogs by viewModel.agentLogs.collectAsState()
     val agentTools = viewModel.agentTools
     val workspacePath = viewModel.agentWorkspacePath
@@ -118,6 +124,7 @@ fun DeveloperDebugScreen(
             modifier = modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .imePadding()
                 .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -239,6 +246,54 @@ fun DeveloperDebugScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
+                    // Probe: does the configured model answer right now, and how fast?
+                    OutlinedButton(
+                        onClick = { viewModel.probeModel() },
+                        enabled = !isProbing,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("debug_probe_model_button")
+                    ) {
+                        if (isProbing) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Menguji model…")
+                        } else {
+                            Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Probe Model (1 + 1 =)")
+                        }
+                    }
+                    probeResult?.let { result ->
+                        Text(
+                            text = result,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Model call metrics: real numbers instead of scrolling the raw log.
+                    if (modelMetrics.isNotEmpty()) {
+                        val successes = modelMetrics.count { it.success }
+                        val averageLatency = modelMetrics.map { it.latencyMs }.average().toLong()
+                        val totalTokens = modelMetrics.sumOf { it.totalTokens }
+                        Text(
+                            text = "Metrik ${modelMetrics.size} panggilan terakhir: $successes sukses, " +
+                                "rata-rata ${averageLatency} ms, total $totalTokens token",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        modelMetrics.take(5).forEach { metric ->
+                            Text(
+                                text = "${if (metric.success) "✅" else "❌"} ${metric.model} · " +
+                                    "${metric.latencyMs} ms · ${metric.totalTokens} token" +
+                                    if (metric.detail.isBlank()) "" else " · ${metric.detail}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
                         value = testPrompt,
                         onValueChange = { viewModel.testPromptText.value = it },
@@ -357,10 +412,14 @@ fun DeveloperDebugScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = if (tool.permission == ToolPermission.SAFE) "SAFE" else "CONFIRM",
+                                    text = tool.permission.name,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (tool.permission == ToolPermission.SAFE) AgentEmerald else Color(0xFFF59E0B)
+                                    color = when (tool.permission) {
+                                        ToolPermission.SAFE -> AgentEmerald
+                                        ToolPermission.AUTO_SAFE -> MaterialTheme.colorScheme.primary
+                                        ToolPermission.CONFIRM -> Color(0xFFF59E0B)
+                                    }
                                 )
                             }
                         }

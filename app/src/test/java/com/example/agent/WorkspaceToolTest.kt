@@ -13,6 +13,7 @@ import com.example.agent.tool.DeletePathTool
 import com.example.agent.tool.ListFilesTool
 import com.example.agent.tool.MakeDirectoryTool
 import com.example.agent.tool.MovePathTool
+import com.example.agent.tool.LineWindow
 import com.example.agent.tool.ReadFileTool
 import com.example.agent.tool.ToolRegistry
 import com.example.agent.tool.WorkspaceFileTool
@@ -295,5 +296,67 @@ class WorkspaceToolTest {
         assertEquals(2, provider.requests.size)
         assertTrue(provider.requests[1].messages.last().content.contains("catatan.md"))
         assertTrue(loop.activityLogs.value.any { it.contains("TOOL_RESULT") && it.contains("write_file") })
+    }
+
+    // ==========================================
+    // read_file paging (offset/limit)
+    // ==========================================
+
+    @Test
+    fun readFileCanBePagedWithOffsetAndLimit() = runBlocking {
+        path("laporan.txt").writeText((1..5).joinToString("\n") { "baris-$it" })
+
+        val page = ReadFileTool(workspace).execute("""{"path":"laporan.txt","offset":2,"limit":2}""")
+
+        assertTrue(page.success)
+        assertTrue(page.output.contains("baris-2"))
+        assertTrue(page.output.contains("baris-3"))
+        assertFalse(page.output.contains("baris-4"))
+        assertEquals("2-3/5", page.metadata["lines"])
+        // The model must be told how to continue instead of guessing.
+        assertEquals("true", page.metadata["truncated"])
+        assertTrue(page.output.contains("offset=4"))
+    }
+
+    @Test
+    fun readFileWithoutArgsStillReadsFromTheTop() = runBlocking {
+        path("kecil.txt").writeText("satu\ndua")
+
+        val whole = ReadFileTool(workspace).execute(args("path" to "kecil.txt"))
+
+        assertTrue(whole.success)
+        assertEquals("1-2/2", whole.metadata["lines"])
+        assertEquals("false", whole.metadata["truncated"])
+        assertFalse(whole.output.contains("lanjutkan dengan offset"))
+    }
+
+    @Test
+    fun readFileWindowPastTheEndIsHonestInsteadOfAnError() = runBlocking {
+        path("pendek.txt").writeText("hanya satu baris")
+
+        val beyond = ReadFileTool(workspace).execute("""{"path":"pendek.txt","offset":99}""")
+
+        assertTrue(beyond.success)
+        assertEquals("1-1/1", beyond.metadata["lines"])
+        // Nothing to continue with: the file really is that short.
+        assertEquals("false", beyond.metadata["truncated"])
+    }
+
+    @Test
+    fun lineWindowClampsLimitAndOffset() {
+        val text = (1..10).joinToString("\n") { "L$it" }
+
+        val window = LineWindow.slice(text, offset = 3, limit = 4)
+        assertEquals("L3\nL4\nL5\nL6", window.text)
+        assertEquals(3, window.fromLine)
+        assertEquals(6, window.toLine)
+        assertEquals(10, window.totalLines)
+        assertTrue(window.hasMore)
+
+        // A limit of zero or a negative offset must never produce an empty/garbage window.
+        assertEquals(1, LineWindow.slice(text, offset = -5, limit = 0).fromLine)
+        assertEquals("L1", LineWindow.slice(text, offset = 0, limit = 1).text)
+        // Huge limits are clamped to the file, not to the cap.
+        assertEquals(10, LineWindow.slice(text, offset = 1, limit = 99_999).toLine)
     }
 }

@@ -78,6 +78,57 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 			return
 		}
 
+		sender := evt.Info.Sender.ToNonAD().String()
+		chat := evt.Info.Chat.ToNonAD().String()
+		// Info.ID is forwarded so Kotlin can mark the message as read (centang biru)
+		// and, later on, edit it once the agent has produced a reply.
+		msgID := string(evt.Info.ID)
+		ts := evt.Info.Timestamp.Unix()
+
+		// Media support: image/audio/video/document are marshalled and handed to Kotlin
+		// as raw protobuf bytes; DownloadMedia(nil-bytes-not-required) unmarshals them
+		// again for the actual download. This keeps the boundary to simple types.
+		if evt.Message != nil && evt.Message.GetImageMessage() != nil {
+			if payload, err := proto.Marshal(evt.Message.GetImageMessage()); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "image",
+					evt.Message.GetImageMessage().GetMimetype(),
+					evt.Message.GetImageMessage().GetCaption(),
+					"",
+					msgID, ts, payload)
+			}
+			return
+		}
+		if evt.Message != nil && evt.Message.GetAudioMessage() != nil {
+			if payload, err := proto.Marshal(evt.Message.GetAudioMessage()); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "audio",
+					evt.Message.GetAudioMessage().GetMimetype(),
+					"",
+					"",
+					msgID, ts, payload)
+			}
+			return
+		}
+		if evt.Message != nil && evt.Message.GetVideoMessage() != nil {
+			if payload, err := proto.Marshal(evt.Message.GetVideoMessage()); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "video",
+					evt.Message.GetVideoMessage().GetMimetype(),
+					evt.Message.GetVideoMessage().GetCaption(),
+					"",
+					msgID, ts, payload)
+			}
+			return
+		}
+		if evt.Message != nil && evt.Message.GetDocumentMessage() != nil {
+			if payload, err := proto.Marshal(evt.Message.GetDocumentMessage()); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "document",
+					evt.Message.GetDocumentMessage().GetMimetype(),
+					evt.Message.GetDocumentMessage().GetCaption(),
+					evt.Message.GetDocumentMessage().GetFileName(),
+					msgID, ts, payload)
+			}
+			return
+		}
+
 		var text string
 		if evt.Message != nil {
 			text = evt.Message.GetConversation()
@@ -89,13 +140,7 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 			return
 		}
 
-		// Info.Sender is the author of the message (the participant inside a group),
-		// while Info.Chat is the conversation that must be used when replying.
-		sender := evt.Info.Sender.ToNonAD().String()
-		chat := evt.Info.Chat.ToNonAD().String()
-		// Info.ID is forwarded so Kotlin can mark the message as read (centang biru)
-		// and, later on, edit it once the agent has produced a reply.
-		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, string(evt.Info.ID), evt.Info.Timestamp.Unix())
+		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, msgID, ts)
 	}
 }
 

@@ -77,6 +77,10 @@ fun HomeScreen(
     val useEchoFallback by viewModel.useEchoFallback.collectAsState()
     val agentLogs by viewModel.agentLogs.collectAsState()
     val sessions by viewModel.sessions.collectAsState()
+    val whitelistMode by viewModel.whitelistMode.collectAsState()
+    val pendingApprovals by viewModel.pendingApprovals.collectAsState()
+    val subAgentTasks by viewModel.subAgentTasks.collectAsState()
+    val scheduledTasks by viewModel.scheduledTasks.collectAsState()
 
     val scrollState = rememberScrollState()
 
@@ -357,6 +361,58 @@ fun HomeScreen(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
+            }
+        }
+
+        // 3b. Security & approval snapshot (Priority 1 + 3)
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onNavigateToSettings() }
+                .testTag("home_security_card"),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = androidx.compose.ui.graphics.SolidColor(
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                )
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text(
+                    text = "Keamanan Agent",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = if (whitelistMode) {
+                        "Whitelist AKTIF — hanya nomor terdaftar yang dilayani"
+                    } else {
+                        "Whitelist nonaktif — semua nomor dilayani kecuali yang diblokir"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val activeSubAgents = subAgentTasks.count {
+                    it.status == com.example.agent.storage.entity.AgentTaskEntity.STATUS_RUNNING ||
+                        it.status == com.example.agent.storage.entity.AgentTaskEntity.STATUS_QUEUED
+                }
+                if (activeSubAgents > 0 || scheduledTasks.isNotEmpty() || pendingApprovals.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = buildString {
+                            append("Sub-agent aktif: $activeSubAgents")
+                            append(" • Task terjadwal: ${scheduledTasks.size}")
+                            append(" • Menunggu approval: ${pendingApprovals.size}")
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (pendingApprovals.isNotEmpty()) {
+                            Color(0xFFF59E0B)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
             }
         }
 

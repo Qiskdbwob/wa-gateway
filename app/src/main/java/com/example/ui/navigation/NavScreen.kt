@@ -49,5 +49,7 @@ sealed class SubScreen {
     object None : SubScreen()
     object Gateway : SubScreen()
     object DeveloperDebug : SubScreen()
+    object Terminal : SubScreen()
+    object Browser : SubScreen()
     data class TaskDetail(val taskId: String, val title: String, val detail: String, val status: String, val time: String) : SubScreen()
 }

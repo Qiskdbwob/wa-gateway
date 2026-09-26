@@ -16,6 +16,12 @@ interface AgentSessionRepository {
     suspend fun getAllSessions(): List<AgentSession>
     fun getAllSessionsFlow(): Flow<List<AgentSession>>
     fun getMessagesFlow(sessionId: String): Flow<List<AgentMessage>>
+
+    /**
+     * Compact support: removes every message of [sessionId] with timestamp <= [upTo]
+     * (messages the CompactManager already folded into a summary).
+     */
+    suspend fun deleteMessagesUpTo(sessionId: String, upTo: Long)
 }
 
 class InMemoryAgentSessionRepository : AgentSessionRepository {
@@ -100,5 +106,12 @@ class InMemoryAgentSessionRepository : AgentSessionRepository {
     override fun getMessagesFlow(sessionId: String): Flow<List<AgentMessage>> {
         val list = messagesBySession[sessionId] ?: emptyList()
         return MutableStateFlow(list.toList())
+    }
+
+    override suspend fun deleteMessagesUpTo(sessionId: String, upTo: Long) {
+        val list = messagesBySession[sessionId] ?: return
+        synchronized(list) {
+            list.removeAll { it.timestamp <= upTo }
+        }
     }
 }

@@ -1,0 +1,115 @@
+name: Optimized APK
+
+# Release-grade APK for testing on real hardware: `assembleOptimized` runs R8 (code shrinking +
+# optimization) and resource shrinking, and — unlike a debug build — is not debuggable, which is
+# what lets ART run the app with its normal optimizations instead of in debug mode. That is the
+# difference a user feels as "the debug APK is slow".
+#
+# No secrets required: the `optimized` build type is signed with the debug keystore, so the APK
+# installs over an existing debug install on a test device. The tagged, properly signed `release`
+# build stays in the Build workflow.
+#
+# Triggers:
+#   workflow_dispatch : Actions -> Run workflow, to get a fresh APK on demand
+#   push (main)       : keeps the downloadable artifact current
+#   pull_request      : only when this workflow, the shared AAR workflow, the R8 keep rules or the
+#                       Gradle build config change — a shrinking mistake would surface exactly
+#                       there, and ordinary PRs stay off the Go/NDK build path.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/optimized-apk.yml'
+      - '.github/workflows/gateway-aar.yml'
+      - 'app/proguard-rules.pro'
+      - 'app/build.gradle.kts'
+      - 'gradle/libs.versions.toml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gateway-aar:
+    name: Build wagateway.aar (Go + gomobile)
+    uses: ./.github/workflows/gateway-aar.yml
+
+  optimized:
+    name: Optimized APK (R8, not debuggable)
+    runs-on: ubuntu-latest
+    needs: gateway-aar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download wagateway.aar
+        uses: actions/download-artifact@v8
+        with:
+          name: wagateway-aar
+          path: app/libs
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: wrapper
+
+      - name: Create debug keystore
+        run: |
+          keytool -genkeypair -v -keystore debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Assemble optimized APK
+        run: gradle assembleOptimized --no-daemon --stacktrace
+
+      # Evidence that this APK really is the optimized one: R8 only writes a mapping file when it
+      # ran, so a silent fallback to an unminified build fails the workflow instead of shipping a
+      # "fast" APK that is not.
+      - name: Verify R8 ran and report size
+        run: |
+          APK=$(ls app/build/outputs/apk/optimized/*.apk | head -1)
+          echo "APK        : $APK"
+          echo "APK size   : $(du -h "$APK" | cut -f1)"
+          echo "DEX entries: $(unzip -l "$APK" | grep -c 'classes.*\.dex')"
+          MAPPING=app/build/outputs/mapping/optimized/mapping.txt
+          if [ ! -f "$MAPPING" ]; then
+            echo "::error::No R8 mapping file at $MAPPING - minification did not run."
+            exit 1
+          fi
+          echo "R8 mapping : $(wc -l < "$MAPPING") renamed members"
+          if [ -f app/build/outputs/mapping/optimized/usage.txt ]; then
+            echo "R8 removed : $(wc -l < app/build/outputs/mapping/optimized/usage.txt) entries (see artifact)"
+          fi
+
+      - name: Upload optimized APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: wagateway-optimized-apk
+          path: app/build/outputs/apk/optimized/*.apk
+          if-no-files-found: error
+
+      # Keep the R8 reports next to the APK: they are what you read when something disappears at
+      # runtime (`usage.txt` = removed code, `mapping.txt` = renamed symbols).
+      - name: Upload R8 reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wagateway-r8-reports
+          path: |
+            app/build/outputs/mapping/optimized/mapping.txt
+            app/build/outputs/mapping/optimized/usage.txt
+            app/build/outputs/mapping/optimized/seeds.txt
+          if-no-files-found: warn

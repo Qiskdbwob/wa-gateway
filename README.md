@@ -58,15 +58,36 @@ antar kontak tidak pernah tercampur.
 | Model probe (`1 + 1 =`) untuk cek availability & latency | ✅ |
 | Provider OpenAI-compatible + Echo fallback offline | ✅ |
 | Penyimpanan API key terenkripsi (Android Keystore, AES-256-GCM) | ✅ |
+| Keys pool: banyak API key dirotasi saat satu kunci kena limit/quota (401/402/403/429) | ✅ |
+| Unified search: satu tool `search` untuk memori, riwayat chat, task, file workspace & daftar tool | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
+| Kesadaran waktu lokal: hari/tanggal/jam perangkat disuntik ke system prompt tiap turn, plus tool `current_time` | ✅ |
+| Skill markdown sederhana (`skills/*.md`, `list_skills`/`read_skill`/`save_skill`, indeks di prompt) | ✅ |
+| MCP connector (JSON-RPC over Streamable HTTP: `initialize`/`tools/list`/`tools/call`) | ✅ |
+| Refleksi otomatis terjadwal (memakai scheduler yang ada) | ✅ |
+| Scheduler tahan proses mati via WorkManager (ticker 15 menit) | ✅ |
+| `read_file` bertahap (`offset`/`limit` per baris, tanpa memotong tanpa jejak) | ✅ |
+| Probe model + panel token/latensi di Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
-| Pesan media (gambar/video/audio/dokumen) | ❌ |
+| Kontrol akses kontak: whitelist & blacklist (per nomor, dinormalisasi dari JID) | ✅ |
+| Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
+| Pesan media masuk: gambar/video (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
+| Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (API siap; UI belum memakainya) |
 | Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
 | Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
-| Terminal, permission/approval | ❌ |
-| Memory layer (episodic/knowledge/learning), search, context manager | ❌ |
-| Subagent, council, multimodal delegation | ❌ |
-| Task/job system, scheduler, MCP, knowledge UI, browser automation | ❌ |
+| Permission tool (SAFE / AUTO_SAFE / CONFIRM) + approval destruktif via chat & UI | ✅ |
+| Memory layer: episodic/knowledge/learning + RAG lexical + context manager | ✅ |
+| Auto & manual compact (`/compact`) menjadi memori episodik | ✅ |
+| Subagent latar belakang (tidak memblokir balasan agent utama) | ✅ |
+| Council 2 debater + moderator, self-reflection (`reflect`) & learning pipeline | ✅ |
+| Task/job system: scheduler interval + UI Tugas (Scheduled/Sub-agent) | ✅ |
+| Web search & web fetch (read-only, AUTO_SAFE) | ✅ |
+| Terminal bawaan: agent menjalankan `curl`/`wget`/skrip bash-python + shell interaktif di app | ✅ (shell perangkat `/system/bin/sh`; perintah destruktif = approval) |
+| Browser automation: buka halaman, isi form, submit, screenshot, sesi login tersimpan | ✅ (engine Android WebView di balik `BrowserEngine`; GeckoView dapat ditukar) |
+| Serah terima captcha / 2FA ke pengguna (agent menunggu, tidak mengarang hasil) | ✅ |
+| Kirim file hasil agent ke chat WhatsApp (screenshot, laporan, unduhan) | ✅ |
+| MCP, Linux sandbox/proot, skill markdown universal | ❌ (dokumen referensi ada di `DOC/reference/`) |
+| Skills/marketplace, observability lanjutan | ❌ |
 
 Fitur yang belum ada **tidak** ditampilkan sebagai UI palsu — menu yang belum didukung menampilkan
 empty state yang menjelaskan statusnya.
@@ -103,7 +124,8 @@ Google Play (wajib menyediakan 64-bit bila menyediakan 32-bit) terpenuhi.
 
 ```bash
 gradle testDebugUnitTest     # unit test
-gradle assembleDebug         # APK debug
+gradle assembleDebug         # APK debug (lambat: debuggable, tanpa R8)
+gradle assembleOptimized     # APK rilis-grade: R8 + resource shrinking, non-debuggable
 ```
 
 > `app/libs/wagateway.aar` tidak di-commit. Tanpa file itu, kompilasi Kotlin akan gagal dengan
@@ -111,17 +133,22 @@ gradle assembleDebug         # APK debug
 
 ### 3. Lewat GitHub Actions
 
-`.github/workflows/build.yml` menjalankan tiga job:
+| Workflow | Job | Trigger | Hasil |
+|---|---|---|---|
+| `build.yml` | `gateway-aar` | semua push/PR | `wagateway.aar` (artifact) — memanggil workflow reusable `gateway-aar.yml` |
+| `build.yml` | `android` | butuh `gateway-aar` | unit test + `wagateway-debug-apk` |
+| `build.yml` | `release` | hanya tag `v*` | APK & AAB **bertanda tangan** + GitHub Release |
+| `optimized-apk.yml` | `optimized` | manual, push ke `main`, atau PR yang menyentuh keep-rules R8 / build config | **`wagateway-optimized-apk`** + laporan R8 |
 
-| Job | Trigger | Hasil |
-|---|---|---|
-| `gateway-aar` | semua push/PR | `wagateway.aar` (artifact) |
-| `android` | butuh `gateway-aar` | unit test + `wagateway-debug-apk` |
-| `release` | hanya tag `v*` | APK & AAB **bertanda tangan** + GitHub Release |
+Gradle di-provision otomatis sesuai versi di `gradlew` properties, jadi `gradle-wrapper.jar` tidak
+perlu di-commit. Build AAR Go dipecah ke `gateway-aar.yml` (reusable) agar Build dan Optimized APK
+memakai satu implementasi yang sama — target `gomobile bind` dan versi NDK tidak bisa lagi berbeda
+antar workflow.
 
-Workflow dibuat satu file agar artifact AAR bisa dipakai antar-job (menghindari mismatch nama
-artifact antar workflow). Gradle di-provision otomatis sesuai versi di `gradlew` properties,
-jadi `gradle-wrapper.jar` tidak perlu di-commit.
+APK `optimized` ditandatangani **debug key**, jadi tidak butuh secret apa pun dan bisa dipasang
+menimpa build debug di HP yang sama untuk membandingkan kecepatan secara langsung. Workflow-nya
+gagal dengan pesan jelas bila R8 ternyata tidak jalan (tidak ada `mapping.txt`), sehingga tidak ada
+APK "teroptimasi" yang sebenarnya belum disusutkan.
 
 ---
 
@@ -151,8 +178,14 @@ aktif, agent tetap membalas secara lokal tanpa jaringan.
 * Pesan yang dikirim oleh akun sendiri **tidak** diproses (`Info.IsFromMe`), sehingga agent tidak
   bisa membalas dirinya sendiri.
 * Saat ini pesan grup diabaikan untuk mencegah agent mengirim ke grup tanpa konfigurasi.
-* Tool yang berkelas `CONFIRM` **tidak** pernah ditawarkan ke model sampai lapisan approval (Phase 9)
-  benar-benar ada, jadi permission tidak sekadar dekorasi.
+* **Whitelist mode**: bila diaktifkan (Pengaturan atau `/whitelist on`), hanya nomor yang terdaftar
+  yang diproses; pesan lain di-drop sebelum masuk ke model dan dicatat sebagai `CONTACT_BLOCKED`.
+  Blacklist selalu menang atas whitelist.
+* Tool berkelas `CONFIRM` **tidak** pernah ditawarkan ke model selama approval dimatikan, dan saat
+  approval aktif pemanggilannya **tidak langsung dieksekusi** — agent membuat request `appr-xxxxxxxx`
+  dan menunggu `/approve <id>` atau `/reject <id>` (kedaluwarsa 24 jam, hanya bisa diputuskan sekali).
+  Hanya tool destruktif (saat ini `delete_path`) yang masuk kelas ini; tool baca-tulis lain tetap
+  otomatis.
 * Agent Loop tidak menyimpan pesan tool ke database; hanya pertanyaan pengguna dan jawaban akhir
   yang masuk riwayat percakapan. Detail teknis tool masuk ke log aktivitas.
 
@@ -240,8 +273,10 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
   path absolut seperti `/etc/passwd` dibaca sebagai path relatif di dalam workspace, bukan path
   sistem.
 * Delapan file tool: `list_files`, `read_file`, `write_file`, `append_file`, `move_path`,
-  `copy_path`, `delete_path`, `make_directory`. Semuanya `SAFE` karena sandbox-nya yang menjadi
-  permission — jadi tidak ada tool file yang bisa keluar dari workspace walau model memintanya.
+  `copy_path`, `delete_path`, `make_directory`. Tujuh di antaranya `SAFE` karena sandbox-nya yang
+  menjadi permission — jadi tidak ada tool file yang bisa keluar dari workspace walau model
+  memintanya. `delete_path` adalah satu-satunya tool destruktif dan karena itu berkelas `CONFIRM`
+  (wajib approval, lihat Phase 8).
 * Penghapusan direktori yang masih berisi wajib memakai `recursive=true`, dan akar workspace tidak
   bisa dihapus sama sekali.
 * Argumen tool dibaca oleh pembaca JSON kecil milik sendiri (`JsonArgs`) yang sadar string, jadi isi
@@ -249,23 +284,231 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 * Developer → Diagnostics menampilkan path workspace yang sedang dipakai, dan Tool Registry
   menampilkan seluruh tool terdaftar beserta kelas permission-nya.
 
+### Phase 8 — Keamanan kontak, memori, approval, scheduler, subagent & media
+
+**Kontrol akses kontak (prioritas keamanan).** `contact_rules` menyimpan whitelist/blacklist satu
+baris per nomor; `normalizePhone()` menyamakan semua bentuk JID (`@s.whatsapp.net`, `@c.us`, device
+suffix, `+`, spasi) sebelum dicocokkan. Saat whitelist mode aktif, hanya nomor terdaftar yang
+lolos — pengecekan terjadi **sebelum** agent membaca pesan, jadi pesan yang diblokir tidak pernah
+masuk history maupun memori. Pesan grup tetap diabaikan. Bisa dikelola dari Pengaturan atau lewat
+`/whitelist` dan `/blacklist`.
+
+**Memori jangka panjang.** Tiga lapisan dalam satu tabel `memory_items`: `EPISODIC` (ringkasan
+compact & peristiwa penting), `KNOWLEDGE` (fakta yang diminta diingat), `LEARNING` (pelajaran dari
+tool `reflect`, berstatus `candidate` → `active` setelah disetujui). Retrieval memakai RAG leksikal
+milik sendiri (`MemoryRetriever`: stopwords ID+EN, skor overlap + boost kebaruan maksimum 25%) tanpa
+layanan embedding eksternal. `ContextManager` menyuntikkan memori relevan + pelajaran aktif ke
+system prompt per-turn (maks ~1.200 karakter per bagian), dan item yang dipakai ditandai
+(`useCount`, `lastUsedAt`).
+
+**Compact.** Otomatis saat jumlah pesan sesi melewati `maxContextMessages`, atau manual dengan
+`/compact`. Pesan lama diringkas model (fallback: ringkasan ekstraktif bila provider tidak tersedia),
+disimpan sebagai memori episodik **dan** pesan `SYSTEM` berawalan `Ringkasan sebelumnya (compact):`,
+lalu baris mentahnya dipangkas. Jadi informasi tidak hilang meski konteksnya dipendekkan.
+
+**Approval hanya untuk yang destruktif.** `ToolPermission` sekarang bertingkat: `SAFE` (otomatis),
+`AUTO_SAFE` (read-only network: `web_search`, `web_fetch`), `CONFIRM` (destruktif: `delete_path`).
+Tool `CONFIRM` tidak pernah ditawarkan ke model saat approval dimatikan; saat aktif, pemanggilan
+pertama membuat record `approval_requests` (`appr-xxxxxxxx`, TTL 24 jam) dan model diminta memberi
+tahu pengguna. Persetujuan datang lewat `/approve <id>` di chat atau tombol Setujui di Pengaturan —
+bukan dialog desktop yang tidak ada di WhatsApp. Satu request hanya bisa diputuskan sekali.
+
+**Scheduler.** `scheduled_tasks` menyimpan ekspresi `interval:<detik>` (minimum 60 detik,
+maksimum 30 hari) + prompt yang dijalankan berkala. Ticker 60 detik mengeksekusi task yang jatuh
+tempo lewat AgentLoop (jawabannya dikirim ke chat asal), mencatat `COMPLETED`/`FAILED` beserta
+hasil/errornya, dan **menentukan jadwal berikutnya sebelum eksekusi** supaya eksekusi lambat tidak
+memicu dobel. Tool `schedule_task` membuat task ini dari percakapan.
+
+**Subagent latar belakang.** `delegate_task` membuat record `agent_tasks` dan langsung
+mengembalikan id-nya — agent utama **tidak menunggu**, ia menjawab pengguna lebih dulu. Subagent
+berjalan di coroutine sendiri dengan persona/model/toolset sendiri; setelah selesai, hasilnya
+dikirim ke chat sebagai pesan baru. Status QUEUED/RUNNING/COMPLETED/FAILED terlihat di tab Tugas.
+
+**Council & refleksi.** `council` menjalankan dua sudut pandang (pendukung vs kritikus) lalu satu
+moderator yang menyintesis, dibatasi `withTimeout(120s)` dan panjang jawaban supaya tetap wajar di
+WhatsApp. `reflect` menyimpan pelajaran sebagai kandidat, bukan langsung dipercaya.
+
+**Media WhatsApp.** Sisi Go mengirim payload protobuf media ke Kotlin (`OnMedia`), lalu bridge
+mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Gambar/video dianalisis provider vision
+(`OpenAiVisionProvider` atau `GeminiVisionProvider` native), dokumen teks dibaca langsung, dan
+hasilnya digabung ke prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
+Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersedia di
+`WaGatewayManager`.
+
+### Priority 9 — Terminal bawaan (agent bisa curl/wget/bash/python)
+
+* `run_command` menjalankan **satu perintah** lewat `/system/bin/sh` (shell + toybox bawaan
+  Android) dengan `cwd` di dalam workspace agent; `terminal_info` melaporkan biner apa yang
+  benar-benar ada di perangkat (`sh`, `bash`, `curl`, `wget`, `python3`, `git`, `gh`, `node`, …)
+  supaya model tidak mengira ada Linux penuh. `curl`/`wget` tersedia di mayoritas perangkat;
+  `python`/`git`/`gh` hanya bila pengguna memasangnya (mis. toolchain Termux).
+* **Approval per perintah, bukan per tool.** `ShellPolicy` menilai perintah: `ls`, `cat`, `grep`,
+  `curl`, `sh skrip.sh` jalan sendiri; pasang/hapus paket (`apt`/`pip`/`npm`/`pkg`/…), `rm`,
+  `sudo`, `kill`, `git push`, dan menulis di luar workspace masuk kelas destruktif → agent parkir
+  sebagai `PENDING_APPROVAL:<id>` dan pengguna menjawab `/approve <id>`. Setelah disetujui, bridge
+  memanggil `executeApproved` sehingga perintah yang direview itulah yang dijalankan (tidak
+  diminta approve dua kali).
+* Layar **Terminal** memakai shell persisten dengan protokol marker (`exit code` + `$PWD`
+  dikirim lewat baris tersembunyi), output dibatasi 1.500 baris dan dibatch ~80 ms — jadi `cd`
+  tetap berlaku antar perintah, sama seperti terminal desktop.
+* `ShellPolicy` adalah gerbang kejujuran, bukan sandbox: perintah bisa ditulis dengan cara yang
+  tidak dikenali. Workspace tetap menjadi tempat kerja default dan path absolut di luar workspace
+  ditolak oleh file tool.
+
+### Priority 10 — Browser automation + serah terima captcha
+
+* Engine: `BrowserEngine` (antarmuka) dengan implementasi `WebViewBrowserEngine` memakai WebView
+  Android. GeckoView **belum** dipakai karena menuntut repository Maven Mozilla, toolchain Java 17
+  untuk seluruh app, dan ±100 MB native library per ABI di atas gateway Go yang sudah ada;
+  antarmukanya sengaja dibuat tipis agar GeckoView/driver lain bisa dipasang tanpa mengubah tool.
+* Satu sesi WebView hidup dipakai bersama agent dan pengguna. **Sesi login persisten**: cookie
+  disimpan oleh `CookieManager` aplikasi di direktori data privat app, bukan di dalam objek
+  WebView — jadi login sekali (oleh `browser_login` maupun manual oleh pengguna di tab Browser)
+  tetap berlaku untuk panggilan tool berikutnya, saat WebView dibuat ulang, bahkan setelah
+  aplikasi ditutup dan dibuka lagi. Setiap `browser_type` dengan `submit` dan `browser_click`
+  memanggil `CookieManager.flush()` supaya cookie login langsung tertulis ke disk. Yang
+  mengakhirinya hanya `browser_logout` (atau tombol logout di UI), yang menghapus cookie, cache,
+  form data, dan history.
+* Alur: `browser_open` → `browser_read` (teks + daftar elemen `agx-N`) → `browser_click`
+  / `browser_type` (dengan `submit`) → `browser_scroll` → `browser_screenshot`.
+* **Login**: pengguna menyimpan akun per situs di Pengaturan → Browser (password dienkripsi
+  `SecretCipher`), `browser_login` mengisi form login secara generik dan melaporkan jujur bila
+  formnya tidak dikenali.
+* **Captcha/2FA tidak pernah dipalsukan.** `browser_ask_user` (dan `browser_login` saat mendeteksi
+  penanda captcha/verifikasi) menampilkan permintaan, mengirim pesan WhatsApp, lalu **menunggu**
+  pengguna menekan “Selesai — lanjutkan agent” di tab Browser (timeout 6 menit).
+* `browser_screenshot` menyimpan PNG di workspace `output/`, dan `send_file_to_chat` mengirimkannya
+  ke chat (gambar sebagai foto, tipe lain sebagai dokumen) — jadi agent bisa memperlihatkan hasil
+  kerjanya di WhatsApp.
+* Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
+  pengguna bahwa agent boleh mengendalikan sesi nyata.
+
+### Skill markdown, MCP connector & refleksi otomatis
+
+* **Skill markdown** (`skills/*.md` di workspace, format bebas tanpa front matter juga jalan):
+  `list_skills` untuk daftar, `read_skill` untuk membaca prosedur, `save_skill` supaya agent bisa
+  menuliskan sendiri cara yang berhasil. Yang masuk ke system prompt hanya **indeks** (nama +
+  deskripsi, dibatasi 25 skill/1.200 karakter) — isinya baru dibaca saat relevan, jadi rak skill
+  yang panjang tidak memakan konteks percakapan.
+* **MCP connector**: tambahkan server MCP di Pengaturan (nama, URL, header opsional — header berisi
+  token disimpan terenkripsi). Aplikasi melakukan `initialize` → `tools/list`, lalu setiap tool
+  server didaftarkan sebagai tool agent dengan nama `mcp__<server>__<tool>`. Hasil `tools/call`
+  (array `content` MCP) diratakan menjadi teks yang bisa dibaca model. Server bisa dinonaktifkan
+  (tool-nya langsung dicabut dari registry) atau dihapus.
+* **Refleksi otomatis**: toggle di Pengaturan → Memori. Saat aktif, bridge membuat satu task
+  terjadwal (`interval:N jam`, default 6 jam, maksimum 24) yang meminta agent meninjau pekerjaan
+  terakhir dan menyimpan 0–2 pelajaran lewat `reflect`/`save_skill`. Hasilnya dikirim ke percakapan
+  terakhir seperti task terjadwal lain. "Tidak ada pelajaran baru" adalah jawaban yang sah.
+* **Scheduler + WorkManager**: ticker 60 detik tetap jalan saat aplikasi hidup; `SchedulerWorker`
+  menambahkan wake-up periodik 15 menit dari sistem, jadi task yang jatuh tempo saat proses mati
+  tetap dieksekusi tanpa menunggu aplikasi dibuka.
+* **Observabilitas**: setiap panggilan model dicatat sebagai metrik (provider, model, latensi,
+  token, sukses/gagal). Tombol **Probe Model** di Developer menguji model aktif ("1 + 1 ="), dan
+  panel metrik menampilkan ringkasan + 5 panggilan terakhir.
+* **`read_file` bertahap**: `offset` (baris awal 1-based) dan `limit` (default 400, maksimum 2.000)
+  dengan info "baris X–Y dari Z" dan petunjuk `offset` berikutnya; batas 16.000 karakter tetap ada
+  sebagai pengaman kedua untuk file yang satu barisnya sangat panjang.
+
+### Keys pool (banyak API key) & unified search
+
+* **Keys pool.** Pengaturan → Model & Provider kini punya field **“Keys Pool (opsional)”**: satu
+  kunci per baris, dipakai bergiliran dengan API Key utama. Kunci awalnya dirotasi (round-robin)
+  supaya beban tidak selalu jatuh ke kunci pertama, dan bila sebuah kunci gagal karena hal yang
+  memang soal kunci — `401`/`402`/`403` (ditolak/tagihan) atau `429` (rate limit/quota) — percobaan
+  berikutnya otomatis memakai kunci lain. Kegagalan lain (5xx, timeout, 400) **tidak** menghabiskan
+  kunci: itu tetap ditangani retry/fallback Agent Loop seperti sebelumnya. Bila semua kunci habis,
+  pesan error menyebut kunci ke berapa yang gagal (`key 2/3`) sehingga penyebabnya jelas di log.
+  Kunci tambahan disimpan terenkripsi (`SecretCipher`) seperti kunci utama.
+* **Unified search** (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
+  chat, memori jangka panjang, task terjadwal & sub-agent, file workspace, dan daftar tool. Ranking
+  leksikal yang bisa dijelaskan: frasa yang cocok di judul > frasa di isi > kecocokan kata per kata,
+  seri diputus oleh yang terbaru; query satu huruf sengaja tidak menghasilkan apa-apa. Tujuannya
+  mengurangi round-trip tool: satu panggilan memberi konteks + id/path yang bisa langsung ditindak-
+  lanjuti (`recall_memory`, `read_file`, atau tool terkait).
+
+### Kesadaran waktu lokal (agent tahu "sekarang")
+
+* Di awal setiap turn, bridge menambahkan blok **“Waktu sekarang”** ke system prompt: hari,
+  tanggal, jam, offset UTC dan nama zona waktu perangkat (`TimeZone.getDefault()`), di-refresh
+  tiap turn sehingga tidak pernah basi. Jadi agent tahu jam berapa sekarang **tanpa** harus
+  memanggil tool lebih dulu, dan perhitungan jadwal/pengingat memakai hari yang benar.
+* Tool `builtin.current_time` tetap terdaftar dan aktif secara default untuk pertanyaan eksplisit
+  yang butuh presisi detik atau zona waktu lain (`timezone_offset_hours`).
+* Blok waktu selalu disuntik, termasuk saat memori jangka panjang sedang dimatikan.
+
+### APK teroptimasi (R8) & pemulihan WebView
+
+* **Tiga varian build.** `debug` (cepat di-iterasi, lambat dijalankan), `optimized` (R8 + resource
+  shrinking, `isDebuggable = false`, ditandatangani debug key sehingga CI bisa memproduksinya tanpa
+  secret), dan `release` (bertanda tangan sungguhan, hanya dari tag). Yang membuat debug terasa
+  lambat bukan ukuran filenya saja, melainkan ART yang menahan optimasi pada build debuggable —
+  karena itu `optimized` mewarisi `release` (non-debuggable), bukan `debug`.
+* **Keep-rules R8** (`app/proguard-rules.pro`) mengunci kontrak yang tidak terlihat R8: kelas
+  `wagateway.**` dan implementasi `WaEventListener` (dipanggil balik dari Go via JNI berdasarkan
+  nama), worker `ListenableWorker` (dipulihkan WorkManager dari nama kelas), implementasi Room, dan
+  `@JavascriptInterface`. Kode `com.example.**` sengaja **tidak** di-obfuscate pada iterasi ini:
+  penyusutan & optimasi library tetap jalan (itulah sumber ukuran/kecepatan), sedangkan risikonya
+  tidak bisa diuji di perangkat dari CI. `release` masih `isMinifyEnabled = false` sampai APK
+  `optimized` terbukti di HP — satu baris untuk mengaktifkannya.
+* **Pemulihan renderer WebView.** WebView merender di proses terpisah dan Android boleh
+  mematikannya; instance yang renderer-nya mati tidak bisa dipakai lagi. Engine kini menangani
+  `onRenderProcessGone`: melepas & menghancurkan view lama, membuat view baru, dan memuat ulang URL
+  terakhir (maksimal 3 kali, lalu error dilaporkan apa adanya). Cookie ada di jar aplikasi sehingga
+  sesi login tidak hilang, dan cookie pihak ketiga kini diterima agar login lewat OAuth/iframe
+  benar-benar terbentuk. Detail riset + backlog: `DOC/riset-optimasi.md`.
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
-* Hanya pesan teks; media diabaikan.
-* Tool bawaan saat ini: `current_time` + 8 file tool yang terkunci di dalam workspace. Terminal
-  menyusul di Phase 8 dan baru akan jalan lewat lapisan approval (Phase 9).
-* `read_file` memotong isi pada 16.000 karakter dan memberi tahu model bahwa isinya dipotong;
-  pembacaan bertahap (offset/limit) belum ada.
+* Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
+  dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). Bila API key vision
+  belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
+* Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
+  skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
+  `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
+  `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
+  bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
+  `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,
+  `browser_logout` — plus tool `mcp__<server>__<tool>` untuk setiap server MCP yang Anda tambahkan.
+  Yang belum ada tinggal Linux sandbox penuh (proot/rootfs); rencana teknisnya ada di
+  `DOC/riset-optimasi.md` bagian 3.1 dan dossier `DOC/reference/linux-sandbox/`.
+* Scheduler: ticker 60 detik saat aplikasi hidup + wake-up WorkManager tiap 15 menit saat proses
+  dimatikan sistem. Jadi eksekusi tidak lagi menunggu aplikasi dibuka, tetapi tidak presisi ke
+  detik dalam kondisi proses mati (WorkManager minimum 15 menit).
+* `read_file` tetap dibatasi 16.000 karakter per panggilan; pembacaan bertahap sekarang tersedia
+  (`offset`/`limit` per baris), tetapi belum ada pencarian di dalam file (pakai `search`).
+* Terminal memakai shell perangkat: tanpa toolchain tambahan, `python`/`node`/`git`/`gh` tidak
+  tersedia. Linux penuh (proot/rootfs) belum ada — lihat `DOC/reference/linux-sandbox/`.
+* Browser automation memakai WebView Android (bukan GeckoView) dan bergantung pada layout halaman;
+  situs dengan anti-bot agresif bisa gagal — agent akan mengatakannya, bukan mengarang.
+* Sesi login browser bertahan di cookie store WebView (disk, privat app) — belum diverifikasi di
+  perangkat nyata melintasi restart aplikasi; situs yang sesinya berakhir di sisi server (atau
+  memakai token yang tidak disimpan sebagai cookie) tetap akan meminta login lagi. `browser_logout`
+  menghapus sesi dengan sengaja.
+* APK `optimized` (R8) sudah bisa diunduh dari CI, tetapi **belum pernah dijalankan di perangkat**
+  dari lingkungan ini: keep-rules R8 tidak bisa divalidasi tanpa menjalankan app. Karena itu
+  `release` masih memakai `isMinifyEnabled = false` sampai Anda mencoba APK `optimized` dan
+  melaporkan hasilnya; setelah itu satu baris di `app/build.gradle.kts` mengaktifkannya untuk rilis.
+* Pemulihan renderer WebView (buat ulang + muat ulang URL setelah renderer dimatikan sistem) juga
+  belum pernah dipicu secara nyata di perangkat — hanya jalur kodenya yang masuk CI.
+* Shell persisten di layar Terminal hidup selama proses aplikasi hidup; belum ada
+  keepalive/foreground service khusus terminal (gateway service yang menjaga proses).
 * `applicationId` masih memakai nilai bawaan template.
 * `.env.example` masih berisi sisa template AI Studio dan tidak dipakai oleh build ini.
 
 ## Roadmap berikutnya
 
-Urutan yang disarankan (mengikuti `DOC/context-2.md`): Terminal → Permission/Approval → Search →
-Memory layer → Learning → Context Manager → Subagent → Council → Multimodal → Observability →
-Task/Scheduler → MCP → Knowledge UI → Browser → WhatsApp media.
+Sudah selesai: kontrol akses kontak, command chat, approval destruktif, memori jangka panjang +
+compact, subagent latar belakang, council & refleksi (termasuk refleksi otomatis terjadwal),
+scheduler + WorkManager, web tools, media WhatsApp masuk/keluar, terminal bawaan, browser
+automation + serah terima captcha/2FA, keys pool, unified search, skill markdown, MCP connector,
+`read_file` bertahap, probe model + metrik, dan build `optimized` (R8).
 
-Dokumen rencana lengkap ada di `DOC/`.
+Urutan yang disarankan berikutnya (alasan & estimasi biaya ada di `DOC/riset-optimasi.md`):
+uji APK `optimized` di HP → aktifkan R8 untuk `release` → sandbox Linux penuh (proot + Alpine
+lewat `nativeLibraryDir`, lihat bagian 3.1) → baseline profile untuk start dingin.
+
+Dokumen rencana lengkap ada di `DOC/`. Dossier referensi untuk sandbox Linux, terminal bawaan, dan
+browser automation (transfer spec lengkap, bukan sekadar ringkasan) ada di `DOC/reference/`.

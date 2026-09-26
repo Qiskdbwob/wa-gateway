@@ -15,12 +15,14 @@ class ToolInputException(message: String) : Exception(message)
  *
  * Every path argument goes through [Workspace.resolve], so a path outside the workspace is
  * rejected (and reported back to the model as a failed tool result) instead of touching the
- * device filesystem. The tools are `SAFE` precisely because the sandbox is the permission: they
- * can only ever reach files the app itself owns.
+ * device filesystem. Most tools are `SAFE` because the sandbox itself is the permission: they
+ * can only ever reach files the app itself owns. The destructive one ([DeletePathTool]) passes
+ * `CONFIRM` instead, so it is routed through the approval layer (Priority 3).
  */
-abstract class WorkspaceFileTool(protected val workspace: Workspace) : Tool {
-
-    final override val permission: ToolPermission = ToolPermission.SAFE
+abstract class WorkspaceFileTool(
+    protected val workspace: Workspace,
+    override val permission: ToolPermission = ToolPermission.SAFE
+) : Tool {
 
     final override suspend fun execute(input: String): ToolResult = try {
         run(input)
@@ -108,11 +110,56 @@ class ListFilesTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
     }
 }
 
+/**
+ * Line window maths for [ReadFileTool]. Pure on purpose: paging is the part that is easy to get
+ * subtly wrong (off-by-one, silently swallowing the tail of a file), so it is unit-tested without
+ * touching disk.
+ */
+object LineWindow {
+
+    /** Lines returned when the model does not ask for a specific window. */
+    const val DEFAULT_LINES = 400
+
+    /** Hard cap per read; larger requests are clamped instead of rejected. */
+    const val MAX_LINES = 2_000
+
+    data class Slice(
+        val text: String,
+        /** 1-based first line actually returned. */
+        val fromLine: Int,
+        /** 1-based last line actually returned. */
+        val toLine: Int,
+        val totalLines: Int,
+        val hasMore: Boolean
+    )
+
+    /**
+     * Takes [limit] lines starting at 1-based [offset]. An offset past the end of the file does not
+     * fail: it returns an empty window at the last line, so the model learns the file is shorter
+     * instead of getting an error it cannot act on.
+     */
+    fun slice(text: String, offset: Int, limit: Int): Slice {
+        val lines = text.split('\n')
+        val total = lines.size
+        val count = limit.coerceIn(1, MAX_LINES)
+        val from = offset.coerceIn(1, total)
+        val to = minOf(from + count - 1, total)
+        return Slice(
+            text = lines.subList(from - 1, to).joinToString("\n"),
+            fromLine = from,
+            toLine = to,
+            totalLines = total,
+            hasMore = to < total
+        )
+    }
+}
+
 class ReadFileTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
     override val id: String = "builtin.read_file"
     override val name: String = "read_file"
     override val description: String =
-        "Membaca isi sebuah file teks di dalam workspace. Gunakan list_files lebih dulu bila belum tahu nama file."
+        "Membaca isi file teks di dalam workspace, bisa bertahap dengan offset/limit (per baris). " +
+            "Gunakan list_files lebih dulu bila belum tahu nama file; lanjutkan dengan offset berikutnya bila hasilnya dipotong."
     override val inputSchema: String = """
         {
           "type": "object",
@@ -120,6 +167,14 @@ class ReadFileTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
             "path": {
               "type": "string",
               "description": "Path file relatif terhadap workspace, contoh 'notes/hari-ini.md'."
+            },
+            "offset": {
+              "type": "integer",
+              "description": "Baris awal (1-based). Default 1."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Jumlah baris yang dibaca (default $DEFAULT_LINES_LABEL, maksimum $MAX_LINES_LABEL)."
             }
           },
           "required": ["path"]
@@ -131,19 +186,37 @@ class ReadFileTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
         if (!target.exists()) return fail("File '${relative(target)}' tidak ditemukan.")
         if (target.isDirectory) return fail("'${relative(target)}' adalah direktori, bukan file.")
 
-        val text = target.readText()
-        val truncated = text.length > Workspace.MAX_READ_CHARS
-        val body = if (truncated) {
-            text.take(Workspace.MAX_READ_CHARS) + "\n...(isi dipotong, file lebih besar dari ${Workspace.MAX_READ_CHARS} karakter)"
-        } else {
-            text
+        val slice = LineWindow.slice(
+            text = target.readText(),
+            offset = JsonArgs.int(input, "offset") ?: 1,
+            limit = JsonArgs.int(input, "limit") ?: LineWindow.DEFAULT_LINES
+        )
+
+        // The character cap stays as a second backstop: a single 300 KB line would otherwise blow
+        // the model's context even though the line window is small.
+        var truncated = slice.hasMore
+        var body = slice.text
+        if (body.length > Workspace.MAX_READ_CHARS) {
+            body = body.take(Workspace.MAX_READ_CHARS) +
+                "\n...(dipotong pada ${Workspace.MAX_READ_CHARS} karakter)"
+            truncated = true
         }
+
+        val header = "Isi file '${relative(target)}' (${target.length()} B, baris " +
+            "${slice.fromLine}-${slice.toLine} dari ${slice.totalLines}):"
+        val hint = if (slice.hasMore) "\n...lanjutkan dengan offset=${slice.toLine + 1}" else ""
         return ok(
-            "Isi file '${relative(target)}' (${target.length()} B):\n$body",
+            "$header\n$body$hint",
             "path" to relative(target),
             "bytes" to target.length().toString(),
+            "lines" to "${slice.fromLine}-${slice.toLine}/${slice.totalLines}",
             "truncated" to truncated.toString()
         )
+    }
+
+    private companion object {
+        const val DEFAULT_LINES_LABEL = LineWindow.DEFAULT_LINES
+        const val MAX_LINES_LABEL = LineWindow.MAX_LINES
     }
 }
 
@@ -305,11 +378,13 @@ class CopyPathTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
     }
 }
 
-class DeletePathTool(workspace: Workspace) : WorkspaceFileTool(workspace) {
+class DeletePathTool(workspace: Workspace) :
+    WorkspaceFileTool(workspace, permission = ToolPermission.CONFIRM) {
     override val id: String = "builtin.delete_path"
     override val name: String = "delete_path"
     override val description: String =
-        "Menghapus file atau direktori kosong di workspace. Untuk direktori yang masih berisi, set recursive=true."
+        "Menghapus file atau direktori kosong di workspace. Untuk direktori yang masih berisi, set recursive=true. " +
+            "Tindakan destruktif: pemanggilan ini butuh persetujuan pengguna sebelum dieksekusi."
     override val inputSchema: String = """
         {
           "type": "object",

@@ -11,13 +11,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Chat
@@ -39,11 +42,13 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +63,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.agent.model.AgentSession
+import com.example.agent.storage.entity.MemoryItemEntity
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.theme.AgentEmerald
 import com.example.wagateway.WaGatewayViewModel
@@ -65,13 +71,86 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * One long-term memory row (episodic / knowledge / learning), with optional actions.
+ */
+@Composable
+private fun MemoryItemCard(
+    item: MemoryItemEntity,
+    onDelete: (() -> Unit)? = null,
+    actions: @Composable (() -> Unit)? = null
+) {
+    val itemTimeFormat = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("memory_item_${item.id}"),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = androidx.compose.ui.graphics.SolidColor(
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+            )
+        )
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.type.lowercase().replaceFirstChar { it.uppercase() } + " • " + item.status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    actions?.invoke()
+                    if (onDelete != null) {
+                        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = "Hapus memori",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = item.content,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 6
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = item.source.ifBlank { "manual" } + " • " + itemTimeFormat.format(Date(item.updatedAt)) +
+                    if (item.useCount > 0) " • dipakai ${item.useCount}x" else "",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
 enum class MemoryCategory(val label: String, val icon: ImageVector) {
     SESSIONS("Sessions", Icons.Default.Chat),
     EPISODIC("Episodic Memory", Icons.Default.History),
     KNOWLEDGE("Knowledge", Icons.Default.Psychology),
     SKILLS("Skills", Icons.Default.AutoAwesome),
+
     LEARNING("Learning", Icons.Default.Lightbulb)
 }
+
+/**
+ * Soft cap for a manually saved fact, shown live under the input. The model reads knowledge
+ * memories back into its context, so a page-length paste would eat the budget of a whole turn;
+ * the counter turns red past the cap instead of silently truncating or rejecting the text.
+ */
+private const val MAX_MEMORY_INPUT_CHARS = 4_000
 
 @Composable
 fun MemoryScreen(
@@ -80,6 +159,11 @@ fun MemoryScreen(
     modifier: Modifier = Modifier
 ) {
     val sessions by viewModel.sessions.collectAsState()
+    val episodicMemories by viewModel.episodicMemories.collectAsState()
+    val knowledgeMemories by viewModel.knowledgeMemories.collectAsState()
+    val learnings by viewModel.learnings.collectAsState()
+    val skills by viewModel.skills.collectAsState()
+    val newMemoryInput by viewModel.newMemoryInput.collectAsState()
     val systemPrompt by viewModel.agentSystemPrompt.collectAsState()
     val modelId by viewModel.agentModelId.collectAsState()
     val isAutoReply by viewModel.isAgentAutoReply.collectAsState()
@@ -332,47 +416,25 @@ fun MemoryScreen(
                 }
 
                 MemoryCategory.EPISODIC -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            )
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    text = "Konteks Episodik Aktif",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Agent menyimpan hingga 20 riwayat pesan terakhir per percakapan untuk membentuk konteks yang relevan saat memanggil model LLM.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Batas Pruning DB:", style = MaterialTheme.typography.labelMedium)
-                                    Text("100 pesan / sesi", fontWeight = FontWeight.Bold)
-                                }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("Context Window Saat Ini:", style = MaterialTheme.typography.labelMedium)
-                                    Text("20 pesan", fontWeight = FontWeight.Bold)
-                                }
+                    if (episodicMemories.isEmpty()) {
+                        EmptyStateCard(
+                            icon = Icons.Default.History,
+                            title = "Belum ada memori episodik",
+                            subtitle = "Ringkasan percakapan panjang (auto-compact) tersimpan di sini sebagai memori episodik."
+                        )
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            items(episodicMemories, key = { it.id }) { item ->
+                                MemoryItemCard(item = item, onDelete = { viewModel.deleteMemory(item.id) })
                             }
                         }
                     }
                 }
 
                 MemoryCategory.KNOWLEDGE -> {
+                    // The input card is pinned at the top and only the content below scrolls, so a
+                    // long fact being typed never pushes its own "Simpan Memori" button (or the
+                    // field itself) out of the viewport — the bug reported on this tab.
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -383,16 +445,85 @@ fun MemoryScreen(
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
-                                    text = "System Prompt & Persona",
-                                    style = MaterialTheme.typography.titleMedium,
+                                    text = "Tambah fakta ke memori jangka panjang",
+                                    style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = systemPrompt,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                OutlinedTextField(
+                                    value = newMemoryInput,
+                                    onValueChange = { viewModel.newMemoryInput.value = it },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 160.dp)
+                                        .testTag("memory_input"),
+                                    placeholder = { Text("Contoh: Nama istri saya Sari, ulang tahunnya 12 Maret.") },
+                                    minLines = 2
                                 )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "${newMemoryInput.length} karakter",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (newMemoryInput.length > MAX_MEMORY_INPUT_CHARS) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                    Button(
+                                        onClick = { viewModel.saveMemory() },
+                                        enabled = newMemoryInput.isNotBlank(),
+                                        modifier = Modifier.testTag("memory_save_button")
+                                    ) {
+                                        Text("Simpan Memori")
+                                    }
+                                }
+                            }
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                )
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "System Prompt & Persona",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = systemPrompt,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            if (knowledgeMemories.isNotEmpty()) {
+                                Text(
+                                    text = "Fakta tersimpan (${knowledgeMemories.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                knowledgeMemories.forEach { item ->
+                                    MemoryItemCard(item = item, onDelete = { viewModel.deleteMemory(item.id) })
+                                }
                             }
                         }
                     }
@@ -400,11 +531,53 @@ fun MemoryScreen(
 
                 MemoryCategory.SKILLS -> {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        EmptyStateCard(
-                            icon = Icons.Default.AutoAwesome,
-                            title = "Belum ada skill agent",
-                            subtitle = "Sistem skill/tool eksternal belum diimplementasikan. Saat ini agent hanya menangani percakapan teks melalui model provider."
-                        )
+                        // Skills live as markdown files in the workspace; the list is reloaded when
+                        // this tab is opened so a file dropped in with `save_skill` shows up.
+                        LaunchedEffect(Unit) { viewModel.refreshSkills() }
+
+                        if (skills.isEmpty()) {
+                            EmptyStateCard(
+                                icon = Icons.Default.AutoAwesome,
+                                title = "Belum ada skill markdown",
+                                subtitle = "Agent menyimpan prosedur sebagai file .md di folder skills/ " +
+                                    "workspace (lewat tool save_skill), dan bisa juga Anda tulis sendiri."
+                            )
+                        } else {
+                            Text(
+                                text = "${skills.size} skill tersedia",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            skills.forEach { skill ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = skill.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (skill.description.isNotBlank()) {
+                                            Text(
+                                                text = skill.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Text(
+                                            text = skill.path,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         Text(
                             text = "Komponen Runtime Aktif",
@@ -476,11 +649,41 @@ fun MemoryScreen(
                 }
 
                 MemoryCategory.LEARNING -> {
-                    EmptyStateCard(
-                        icon = Icons.Default.Info,
-                        title = "Modul Pembelajaran",
-                        subtitle = "Pembelajaran jangka panjang (long-term memory & adaptation) belum diaktifkan."
-                    )
+                    val candidates = learnings.filter { it.status == MemoryItemEntity.STATUS_CANDIDATE }
+                    val active = learnings.filter { it.status == MemoryItemEntity.STATUS_ACTIVE }
+                    if (learnings.isEmpty()) {
+                        EmptyStateCard(
+                            icon = Icons.Default.Info,
+                            title = "Belum ada pembelajaran",
+                            subtitle = "Agent mencatat pelajaran lewat tool 'reflect'; kandidat muncul di sini untuk disetujui."
+                        )
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            items(learnings, key = { it.id }) { item ->
+                                MemoryItemCard(
+                                    item = item,
+                                    onDelete = { viewModel.rejectLearning(item.id) },
+                                    actions = {
+                                        if (item.status == MemoryItemEntity.STATUS_CANDIDATE) {
+                                            TextButton(onClick = { viewModel.promoteLearning(item.id) }) {
+                                                Text("Aktifkan", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                            TextButton(onClick = { viewModel.rejectLearning(item.id) }) {
+                                                Text("Tolak", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                            item {
+                                Text(
+                                    text = "${active.size} aktif • ${candidates.size} menunggu review",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

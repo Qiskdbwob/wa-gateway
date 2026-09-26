@@ -79,7 +79,14 @@ class AgentLoop(
      * Phase 6 — tools the loop may look up by name. A null or empty registry simply means the
      * model is asked to answer without tools; the loop never references a concrete tool.
      */
-    var toolRegistry: ToolRegistry? = null
+    var toolRegistry: ToolRegistry? = null,
+    /**
+     * Priority 3 — approval for CONFIRM-class (destructive) tools. When set, a CONFIRM tool
+     * call is converted into a pending approval instead of being executed; the requester
+     * answers via chat commands. Null keeps the legacy behaviour (CONFIRM tools are simply
+     * not advertised, so this path is unreachable anyway).
+     */
+    var approvalGate: ApprovalGate? = null
 ) {
     var modelProvider: ModelProvider = modelProvider
         set(value) {
@@ -108,6 +115,33 @@ class AgentLoop(
 
     private val _activityLogs = MutableStateFlow<List<String>>(emptyList())
     val activityLogs: StateFlow<List<String>> = _activityLogs.asStateFlow()
+
+    /**
+     * One model call, in the shape a dashboard needs: which provider/model, how long it took, how
+     * many tokens it burned, and whether it worked. The log lines already carry this text; having
+     * it as a value is what lets the Developer screen show numbers instead of a wall of text.
+     */
+    data class ModelCallMetric(
+        val timestamp: Long = System.currentTimeMillis(),
+        val provider: String,
+        val model: String,
+        val latencyMs: Long,
+        val totalTokens: Int,
+        val success: Boolean,
+        val detail: String = ""
+    )
+
+    /** Optional sink (the bridge keeps the last N calls for the Developer panel). */
+    @Volatile
+    var onModelCall: ((ModelCallMetric) -> Unit)? = null
+
+    private fun recordModelCall(metric: ModelCallMetric) {
+        try {
+            onModelCall?.invoke(metric)
+        } catch (_: Exception) {
+            // Metrics must never break a turn.
+        }
+    }
 
     /** Human readable tool activity of the running turn, e.g. "Menjalankan tool current_time...". */
     private val _currentActivity = MutableStateFlow<String?>(null)
@@ -169,7 +203,13 @@ class AgentLoop(
      */
     suspend fun processInput(
         input: AgentInput,
-        onProgress: ((String) -> Unit)? = null
+        onProgress: ((String) -> Unit)? = null,
+        /**
+         * Priority 6 — replaces the agent's system prompt for THIS turn only (used by
+         * subagent/council turns so each persona keeps its own prompt). Scoped to the
+         * call so concurrent conversations never leak prompts into each other.
+         */
+        systemPromptOverride: String? = null
     ): Result<AgentResponse> {
         if (!agent.enabled) {
             log("MESSAGE_RECEIVED", "Ignored message for conv='${input.conversationId}' because agent is disabled.")
@@ -296,11 +336,10 @@ class AgentLoop(
 
                         val modelRequest = ModelRequest(
                             messages = activeHistory,
-                            systemPrompt = agent.systemPrompt,
+                            systemPrompt = systemPromptOverride ?: agent.systemPrompt,
                             modelId = requestModel,
                             tools = requestTools
                         )
-
                         val callStart = System.currentTimeMillis()
                         val modelResult = target.provider.generate(modelRequest)
                         val latencyMs = System.currentTimeMillis() - callStart
@@ -362,7 +401,10 @@ class AgentLoop(
                                         )
                                     } else {
                                         try {
-                                            tool.execute(call.arguments)
+                                            // Priority 3 — destructive (CONFIRM) tools go through the
+                                            // approval gate instead of running directly.
+                                            approvalGate?.executeWithApproval(tool, call.name, call.arguments, input.conversationId)
+                                                ?: tool.execute(call.arguments)
                                         } catch (e: Exception) {
                                             log("TOOL_ERROR", "Tool '${call.name}' gagal dieksekusi: ${e.message}")
                                             ToolResult(
@@ -376,15 +418,21 @@ class AgentLoop(
 
                                     log(
                                         "TOOL_RESULT",
-                                        "tool=${call.name}, success=${toolResult.success}, latency=${toolLatencyMs}ms, output=\"${toolResult.output.take(120)}\", error=${toolResult.error?.take(120) ?: "none"}"
+                                        "tool=${call.name}, success=${toolResult.success}, latency=${toolLatencyMs}ms, output=\"${toolResult.output.take(120)}\", error=${toolResult.error?.take(160) ?: "none"}"
                                     )
-                                    emitProgress(
-                                        if (toolResult.success) {
-                                            "🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
-                                        } else {
-                                            "🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
-                                        }
-                                    )
+                                    if (toolResult.error?.startsWith("PENDING_APPROVAL:") == true) {
+                                        // Destructive call parked for human approval — keep the
+                                        // turn alive so the model relays the request to the user.
+                                        emitProgress("🔐 Menunggu persetujuan untuk ${call.name}...")
+                                    } else {
+                                        emitProgress(
+                                            if (toolResult.success) {
+                                                "🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
+                                            } else {
+                                                "🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
+                                            }
+                                        )
+                                    }
 
                                     activeHistory = (activeHistory + AgentMessage(
                                         id = UUID.randomUUID().toString(),
@@ -408,7 +456,7 @@ class AgentLoop(
                                 val followUpResult = target.provider.generate(
                                     ModelRequest(
                                         messages = activeHistory,
-                                        systemPrompt = agent.systemPrompt,
+                                        systemPrompt = systemPromptOverride ?: agent.systemPrompt,
                                         modelId = requestModel,
                                         tools = if (advertiseTools) availableTools else emptyList()
                                     )
@@ -510,6 +558,16 @@ class AgentLoop(
                                 "MODEL_SUCCESS",
                                 "target=${target.id}, provider=${finalAgentResponse.provider}, model=${finalAgentResponse.model}, length=${finalAgentResponse.content.length}, latency=${modelResponse.latencyMs}ms, tokens=${finalAgentResponse.usage?.totalTokens ?: 0}"
                             )
+                            recordModelCall(
+                                ModelCallMetric(
+                                    provider = finalAgentResponse.provider.ifBlank { target.provider.name },
+                                    model = finalAgentResponse.model.ifBlank { requestModel },
+                                    latencyMs = modelResponse.latencyMs,
+                                    totalTokens = finalAgentResponse.usage?.totalTokens ?: 0,
+                                    success = true,
+                                    detail = "target=${target.id}, attempt=$modelAttempt"
+                                )
+                            )
                             break@targetLoop
 
                         } else {
@@ -523,6 +581,16 @@ class AgentLoop(
                             log(
                                 "MODEL_ERROR",
                                 "errorType=${classification.kind}, attempt=$modelAttempt, target=${target.id}, provider=${target.provider.name}, model=$requestModel, latency=${latencyMs}ms, error=${error.message}"
+                            )
+                            recordModelCall(
+                                ModelCallMetric(
+                                    provider = target.provider.name,
+                                    model = requestModel,
+                                    latencyMs = latencyMs,
+                                    totalTokens = 0,
+                                    success = false,
+                                    detail = "errorType=${classification.kind}, attempt=$modelAttempt"
+                                )
                             )
 
                             // Phase 6 — some OpenAI-compatible endpoints reject the "tools" field

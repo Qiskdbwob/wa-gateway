@@ -13,13 +13,22 @@ import java.util.concurrent.ConcurrentHashMap
  * The Agent Loop never references a concrete tool: it looks tools up here by name. Adding a
  * tool therefore means registering it, not editing the loop.
  *
- * Only [ToolPermission.SAFE] tools are advertised to the model. Tools that need manual
- * approval stay invisible until the approval layer (Phase 9) can answer for them — that is
- * what keeps the permission boundary from being decoration.
+ * Only tools that may run without manual approval (SAFE / AUTO_SAFE) are advertised to
+ * the model. CONFIRM tools stay invisible until the approval coordinator is attached —
+ * that is what keeps the permission boundary from being decoration.
  */
 class ToolRegistry(initialTools: List<Tool> = emptyList()) {
 
     private val tools = ConcurrentHashMap<String, Tool>()
+
+    /**
+     * Priority 3 — when an approval coordinator is attached, CONFIRM-class (destructive)
+     * tools are also advertised: a pending call is parked behind the approval gate
+     * instead of running. With approval disabled they stay invisible — a tool nobody can
+     * approve must not be offered to the model.
+     */
+    @Volatile
+    var approvalEnabled: Boolean = false
 
     init {
         initialTools.forEach { register(it) }
@@ -39,11 +48,14 @@ class ToolRegistry(initialTools: List<Tool> = emptyList()) {
 
     fun isEmpty(): Boolean = tools.isEmpty()
 
-    /** Tools that may run without manual approval. */
-    fun safeTools(): List<Tool> = all().filter { it.permission == ToolPermission.SAFE }
+    /** Tools that may run without manual approval (SAFE + AUTO_SAFE). */
+    fun safeTools(): List<Tool> = all().filter { it.permission != ToolPermission.CONFIRM }
 
     /** Tool definitions offered to the model. */
-    fun definitions(): List<ToolDefinition> = safeTools().map { it.toDefinition() }
+    fun definitions(): List<ToolDefinition> =
+        all()
+            .filter { approvalEnabled || it.permission != ToolPermission.CONFIRM }
+            .map { it.toDefinition() }
 
     companion object {
         /**

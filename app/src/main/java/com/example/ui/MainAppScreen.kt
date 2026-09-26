@@ -3,6 +3,7 @@ package com.example.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -32,9 +33,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.ui.browser.BrowserScreen
 import com.example.ui.chat.ChatScreen
 import com.example.ui.debug.DeveloperDebugScreen
 import com.example.ui.gateway.WhatsAppGatewayScreen
+import com.example.ui.terminal.TerminalScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.memory.MemoryScreen
 import com.example.ui.navigation.MainTab
@@ -68,6 +71,18 @@ fun MainAppScreen(
         )
     } else if (currentSubScreen == SubScreen.DeveloperDebug) {
         DeveloperDebugScreen(
+            viewModel = viewModel,
+            onNavigateBack = { currentSubScreen = SubScreen.None },
+            modifier = modifier
+        )
+    } else if (currentSubScreen == SubScreen.Terminal) {
+        TerminalScreen(
+            viewModel = viewModel,
+            onNavigateBack = { currentSubScreen = SubScreen.None },
+            modifier = modifier
+        )
+    } else if (currentSubScreen == SubScreen.Browser) {
+        BrowserScreen(
             viewModel = viewModel,
             onNavigateBack = { currentSubScreen = SubScreen.None },
             modifier = modifier
@@ -116,6 +131,10 @@ fun MainAppScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
+                    // The keyboard shrinks the window (adjustResize), but without this the IME
+                    // overlaps the content and pushes input rows / save buttons below the fold —
+                    // reported on the Memory > Knowledge tab when typing a long fact.
+                    .imePadding()
             ) {
                 when (currentTab) {
                     MainTab.HOME -> {
@@ -149,7 +168,9 @@ fun MainAppScreen(
                         SettingsScreen(
                             viewModel = viewModel,
                             onNavigateToGateway = { currentSubScreen = SubScreen.Gateway },
-                            onNavigateToDebug = { currentSubScreen = SubScreen.DeveloperDebug }
+                            onNavigateToDebug = { currentSubScreen = SubScreen.DeveloperDebug },
+                            onNavigateToTerminal = { currentSubScreen = SubScreen.Terminal },
+                            onNavigateToBrowser = { currentSubScreen = SubScreen.Browser }
                         )
                     }
                 }
