@@ -4,8 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.os.Build
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -44,6 +47,11 @@ import kotlin.coroutines.resume
  * or the agent calls `browser_logout` / [clearSession], which wipes cookies, cache and form
  * data. [typeText] with `submit = true` and every [click] flush the jar to disk immediately so a
  * process kill right after login cannot lose it.
+ *
+ * Reliability: WebView renders in its own process, and Android may kill that renderer under
+ * memory pressure. When that happens the view can never be reused, so [onRenderProcessGone]
+ * removes and destroys it and the next call transparently builds a fresh one — the login
+ * cookies live in the app-wide jar, so the new renderer starts already signed in.
  */
 @SuppressLint("SetJavaScriptEnabled")
 class WebViewBrowserEngine(
@@ -64,6 +72,14 @@ class WebViewBrowserEngine(
 
     @Volatile
     private var lastError: String? = null
+
+    /** How many times the system killed the WebView renderer; surfaced for honest diagnostics. */
+    @Volatile
+    private var rendererRestarts: Int = 0
+
+    /** Last URL asked for, so a recreated renderer can restore the session it was on. */
+    @Volatile
+    private var lastLoadedUrl: String? = null
 
     override fun isReady(): Boolean = webView != null
 
@@ -88,6 +104,15 @@ class WebViewBrowserEngine(
             cacheMode = WebSettings.LOAD_DEFAULT
             userAgentProvider()?.takeIf { it.isNotBlank() }?.let { userAgentString = it }
         }
+        // Keep this renderer alive as long as the app is alive: automation runs in the
+        // background while the user is on another screen, and a killed renderer would abort a
+        // multi-step flow (the flags ask the system not to treat us as a kill candidate first).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+        }
+        // OAuth/SSO flows commonly live in a third-party iframe; without this the login looks
+        // like it never completes even though the form did submit.
+        CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
         view.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 pageLoaded?.complete(Unit)
@@ -102,6 +127,47 @@ class WebViewBrowserEngine(
                     lastError = "Gagal memuat halaman: ${error?.description ?: "unknown error"}"
                     pageLoaded?.complete(Unit)
                 }
+            }
+
+            /**
+             * The renderer process is gone (Android reclaimed memory or it crashed). A WebView
+             * whose renderer died can never be reused, so the only correct response is to
+             * remove it, destroy it and build a new one. Returning `true` tells the platform the
+             * app handled the event and keeps the process alive; the cookie jar is untouched, so
+             * the new renderer is still logged in.
+             */
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                rendererRestarts += 1
+                val cause = if (detail?.didCrash() == true) "crash" else "dihentikan sistem (memori rendah)"
+                lastError = "Renderer WebView $cause; sesi dibangun ulang ($rendererRestarts/$MAX_RENDERER_RECOVERIES)."
+                pageLoaded?.complete(Unit)
+                if (view != null) {
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    try {
+                        view.destroy()
+                    } catch (_: Exception) {
+                        // Already gone.
+                    }
+                    if (webView === view) webView = null
+                }
+                // Recreate right away - this callback already runs on the main thread - so the
+                // next tool call and the Browser screen get a usable view instead of a blank one.
+                // After a few restarts the page itself is suspect, so recovery stops and the error
+                // above tells the agent (and the log) what happened.
+                if (rendererRestarts <= MAX_RENDERER_RECOVERIES) {
+                    try {
+                        val replacement = createWebView()
+                        webView = replacement
+                        lastLoadedUrl?.let { replacement.loadUrl(it) }
+                    } catch (e: Exception) {
+                        webView = null
+                        lastError = "Gagal membuat ulang WebView: ${e.message ?: e.javaClass.simpleName}"
+                    }
+                }
+                return true
             }
         }
         view.webChromeClient = WebChromeClient()
@@ -125,6 +191,7 @@ class WebViewBrowserEngine(
         pageLoaded = gate
         lastError = null
 
+        lastLoadedUrl = normalized
         withContext(mainDispatcher) { view.loadUrl(normalized) }
         withTimeoutOrNull(PAGE_TIMEOUT_MS) { gate.await() }
 
@@ -381,6 +448,9 @@ class WebViewBrowserEngine(
         private const val VIEWPORT_WIDTH = 1080
         private const val VIEWPORT_HEIGHT = 1920
         private const val PAGE_TIMEOUT_MS = 20_000L
+
+        /** How often a dead renderer is rebuilt automatically before the page is declared broken. */
+        private const val MAX_RENDERER_RECOVERIES = 3
 
         /** Collects the readable text plus every interactive element, tagged for later calls. */
         private val SNAPSHOT_SCRIPT = """
