@@ -138,7 +138,31 @@ di CI lingkungan ini → masuk backlog, bukan dikerjakan sekarang. **[dokumen re
 | 5 | Cache snapshot DOM antar langkah browser | Memotong 1 JS eval per langkah | Sedang | Kesegaran DOM harus dijaga |
 | 6 | `armeabi-v7a` diuji / atau dibuang | Ukuran APK turun bila dibuang | Rendah | Belum pernah diuji di ARM 32-bit |
 
-## 5. Yang sengaja TIDAK dilakukan
+## 5. Hasil terukur (CI run `36206185979`, workflow Optimized APK)
+
+Angka nyata dari build pertama yang berhasil — bukan estimasi:
+
+| Metrik | Nilai | Catatan |
+|---|---|---|
+| `gradle assembleOptimized` | **sukses, 3m 50s** | R8 + resource shrinking atas Compose + AndroidX + OkHttp + zxing |
+| `mapping.txt` | **290.672 anggota di-rename** | Bukti R8 benar-benar berjalan (workflow gagal bila file ini tidak ada) |
+| `usage.txt` | **61.297 entri dihapus** | Kode yang benar-benar dipangkas dari DEX |
+| Jumlah DEX | **1** | Tanpa `multiDex` sama sekali |
+| Ukuran APK di disk | **57 MB** | Di dominasi **3 salinan `libgojni.so`** (arm64-v8a + armeabi-v7a + x86_64), bukan kode Kotlin |
+| Ukuran artifact unduhan | **21 MB** | Ini angka "download APK" yang Anda lihat di halaman Actions |
+| Unit test (workflow Build, run `36206185914`) | **145 tes, 0 gagal** | Tidak ada regresi dari perubahan keep-rules/build type |
+
+**Temuan penting dari angka di atas:** ukuran APK sekarang ditentukan oleh ABI, bukan oleh R8.
+Langkah optimasi ukuran berikutnya yang paling murah karena itu bukan mengobfuscate kode, tetapi
+**split per-ABI** (`android.splits.abi` atau unduhan terpisah dari AAB): satu APK `arm64-v8a` saja
+akan berukuran sekitar sepertiganya (±20 MB). Belum dikerjakan karena mengubah nama/lokasi artifact
+yang dipakai workflow rilis bertanda tangan — perlu keputusan Anda.
+
+Catatan kejujuran yang sama seperti sebelumnya: R8 sekarang berjalan di CI, tetapi **APK hasilnya
+belum pernah dijalankan di perangkat**. Karena itu `release` sengaja dibiarkan tidak terminifikasi
+(lihat bagian 2.1). Pastikan Anda mengunduh artifact `wagateway-optimized-apk` dan mencobanya dulu.
+
+## 6. Yang sengaja TIDAK dilakukan
 
 - **GeckoView** sebagai engine browser: +~100 MB native per ABI, repo Maven Mozilla, dan Java 17
   untuk seluruh app — ditolak sejak awal; antarmuka `BrowserEngine` sudah siap ditukar. **[kode]**
