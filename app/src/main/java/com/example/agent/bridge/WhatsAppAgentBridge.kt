@@ -291,7 +291,7 @@ class WhatsAppAgentBridge private constructor(
         }
     )
 
-    /** Markdown skills: `workspace/skills/*.md`, indexed into the prompt and readable as tools. */
+    /** Markdown skills: files in the workspace `skills` folder, indexed into the prompt. */
     val skillLibrary = com.example.agent.skills.SkillLibrary(workspace)
 
     private val _skills = MutableStateFlow<List<com.example.agent.skills.Skill>>(emptyList())

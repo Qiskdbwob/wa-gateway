@@ -80,7 +80,7 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     private val _isProbing = MutableStateFlow(false)
     val isProbing: StateFlow<Boolean> = _isProbing.asStateFlow()
 
-    /** Markdown skills in the workspace (`skills/*.md`). */
+    /** Markdown skills in the workspace (files under the skills folder). */
     val skills: StateFlow<List<Skill>> = agentBridge.skills
 
     /** Periodic self-reflection settings (executed by the scheduler). */
