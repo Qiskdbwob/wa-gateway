@@ -5,6 +5,7 @@ import android.util.Base64
 import com.example.agent.approval.ApprovalCoordinator
 import com.example.agent.chat.ChatCommandHandler
 import com.example.agent.loop.AgentLoop
+import com.example.agent.mcp.McpManager
 import com.example.agent.loop.ApprovalGate
 import com.example.agent.memory.CompactManager
 import com.example.agent.memory.ContextManager
@@ -29,6 +30,7 @@ import com.example.agent.router.ModelRouter
 import com.example.agent.router.ModelTarget
 import com.example.agent.router.RetryPolicy
 import com.example.agent.scheduler.SchedulerEngine
+import com.example.agent.scheduler.SchedulerWork
 import com.example.agent.storage.ContactAccessRepository
 import com.example.agent.storage.RoomAgentSessionRepository
 import com.example.agent.storage.SecretCipher
@@ -50,6 +52,9 @@ import com.example.agent.tool.WebFetchTool
 import com.example.agent.tool.WebSearchTool
 import com.example.agent.search.LocalSearchSources
 import com.example.agent.tool.SearchEverythingTool
+import com.example.agent.tool.ListSkillsTool
+import com.example.agent.tool.ReadSkillTool
+import com.example.agent.tool.SaveSkillTool
 import com.example.agent.tool.CouncilTool
 import com.example.agent.tool.BrowserClickTool
 import com.example.agent.tool.BrowserClearSessionTool
@@ -286,6 +291,28 @@ class WhatsAppAgentBridge private constructor(
         }
     )
 
+    /** Markdown skills: `workspace/skills/*.md`, indexed into the prompt and readable as tools. */
+    val skillLibrary = com.example.agent.skills.SkillLibrary(workspace)
+
+    private val _skills = MutableStateFlow<List<com.example.agent.skills.Skill>>(emptyList())
+    val skills: StateFlow<List<com.example.agent.skills.Skill>> = _skills.asStateFlow()
+
+    /** Last model calls (success and failure) for the Developer metrics panel. */
+    private val _modelMetrics = MutableStateFlow<List<AgentLoop.ModelCallMetric>>(emptyList())
+    val modelMetrics: StateFlow<List<AgentLoop.ModelCallMetric>> = _modelMetrics.asStateFlow()
+
+    /**
+     * MCP servers (config + discovered tools). One configured server can add many tools, which is
+     * why this manager keeps the registry in sync instead of the bridge doing it by hand.
+     */
+    val mcpManager = McpManager(
+        dao = AgentDatabase.getInstance(context).mcpServerDao(),
+        registry = { toolRegistry },
+        decrypt = { SecretCipher.decrypt(it) },
+        encrypt = { SecretCipher.encrypt(it) },
+        log = { tag, message -> agentLoop.log(tag, message) }
+    )
+
     val toolRegistry: ToolRegistry = buildToolRegistry()
 
     val agentLoop = AgentLoop(
@@ -303,6 +330,13 @@ class WhatsAppAgentBridge private constructor(
     private val _isAutoReplyEnabled = MutableStateFlow(false)
     val isAutoReplyEnabled: StateFlow<Boolean> = _isAutoReplyEnabled.asStateFlow()
 
+    /** Periodic self-reflection (runs as a scheduled task so it survives restarts). */
+    private val _autoReflectEnabled = MutableStateFlow(false)
+    val autoReflectEnabled: StateFlow<Boolean> = _autoReflectEnabled.asStateFlow()
+
+    private val _autoReflectIntervalHours = MutableStateFlow(DEFAULT_AUTO_REFLECT_HOURS)
+    val autoReflectIntervalHours: StateFlow<Int> = _autoReflectIntervalHours.asStateFlow()
+
     private val _useEchoFallback = MutableStateFlow(true)
     val useEchoFallback: StateFlow<Boolean> = _useEchoFallback.asStateFlow()
 
@@ -312,6 +346,10 @@ class WhatsAppAgentBridge private constructor(
     init {
         // Register WhatsApp outgoing channel adapter to the Agent Loop
         agentLoop.registerChannelAdapter(WhatsAppChannelAdapter(gatewayManager))
+        // Model-call metrics feed the Developer panel (numbers, not just log lines).
+        agentLoop.onModelCall = { metric ->
+            _modelMetrics.value = (listOf(metric) + _modelMetrics.value).take(MAX_MODEL_METRICS)
+        }
         updateModelRouter()
 
         // Load persisted configuration from Room on startup
@@ -344,6 +382,8 @@ class WhatsAppAgentBridge private constructor(
                         systemPrompt = saved.systemPrompt,
                         modelId = saved.modelId
                     )
+                    _autoReflectEnabled.value = saved.autoReflectEnabled
+                    _autoReflectIntervalHours.value = saved.autoReflectIntervalHours
                     _terminalEnabled.value = saved.terminalEnabled
                     _browserEnabled.value = saved.browserEnabled
                     _browserUserAgent.value = saved.browserUserAgent
@@ -358,8 +398,16 @@ class WhatsAppAgentBridge private constructor(
                 approvalCoordinator.expireStale()
                 // Destructive tools are advertised only while approval routing is on.
                 toolRegistry.approvalEnabled = _approvalEnabled.value
-                // Start the scheduler ticker (checks every 60 s).
+                // Start the scheduler ticker (checks every 60 s) and register the WorkManager
+                // wake-up so due tasks still run after the process was killed.
                 SchedulerEngine.startTicking(scheduler, scope = scope)
+                SchedulerWork.enqueue(context)
+                // Make sure the optional periodic self-reflection exists / is paused as configured.
+                syncAutoReflection()
+                refreshSkills()
+                // Discover MCP tools. Network call: every failure is reported per server in the
+                // Settings status line and never blocks startup.
+                mcpManager.refresh()
             } catch (_: Exception) {
                 // Ignore initialization error and continue with defaults
             }
@@ -392,6 +440,10 @@ class WhatsAppAgentBridge private constructor(
                 )
             )
         )
+        // Markdown skills — index in the prompt, body on demand, new ones written by the agent.
+        registry.register(ListSkillsTool(skillLibrary))
+        registry.register(ReadSkillTool(skillLibrary))
+        registry.register(SaveSkillTool(skillLibrary, workspace))
         // Priority 6 — subagent + reflection.
         registry.register(
             DelegateTaskTool { spec, conversationId ->
@@ -679,6 +731,38 @@ class WhatsAppAgentBridge private constructor(
         persistConfig()
     }
 
+    // ==================================================================================
+    // MCP connector (UI surface)
+    // ==================================================================================
+
+    /** Adds a server and discovers its tools; the message is shown in Settings. */
+    suspend fun addMcpServer(name: String, url: String, headers: String): String =
+        mcpManager.add(name, url, headers).fold(
+            onSuccess = { server ->
+                val tools = mcpManager.toolNames().size
+                "MCP '${server.name}' ditambahkan. Total tool MCP terdaftar: $tools."
+            },
+            onFailure = { error -> error.message ?: "Gagal menambah MCP server." }
+        )
+
+    suspend fun removeMcpServer(id: String) = mcpManager.remove(id)
+
+    suspend fun setMcpServerEnabled(id: String, enabled: Boolean) = mcpManager.setEnabled(id, enabled)
+
+    suspend fun refreshMcpTools(): String {
+        mcpManager.refresh()
+        val statuses = mcpManager.statuses.value
+        val failed = statuses.count { it.value.startsWith("error") }
+        if (failed == 0) {
+            return "${mcpManager.toolNames().size} tool MCP terdaftar dari ${statuses.size} server."
+        }
+        val names = mcpManager.servers.value.associate { it.id to it.name }
+        val detail = statuses.filterValues { it.startsWith("error") }
+            .map { (id, status) -> "${names[id] ?: id} → ${status.removePrefix("error: ")}" }
+            .joinToString("; ")
+        return "$failed server MCP gagal: $detail"
+    }
+
     /** One-key-per-line rendering of the pool, for the Settings field. */
     val apiKeyPoolText: String get() = ProviderKeyPool.format(providerConfig.value.apiKeys)
 
@@ -732,6 +816,8 @@ class WhatsAppAgentBridge private constructor(
                         visionBaseUrl = _visionConfig.value.baseUrl,
                         visionApiKey = SecretCipher.encrypt(_visionConfig.value.apiKey),
                         visionModelId = _visionConfig.value.modelId,
+                        autoReflectEnabled = _autoReflectEnabled.value,
+                        autoReflectIntervalHours = _autoReflectIntervalHours.value,
                         terminalEnabled = _terminalEnabled.value,
                         browserEnabled = _browserEnabled.value,
                         browserSites = SecretCipher.encrypt(SiteCredentialStore.encode(_browserSites.value)),
@@ -998,15 +1084,99 @@ class WhatsAppAgentBridge private constructor(
      */
     private suspend fun buildEffectivePrompt(basePrompt: String, userMessage: String): String {
         val timedPrompt = basePrompt.trim() + "\n\n" + ContextManager.timeContext()
-        if (!_longTermMemoryEnabled.value) return timedPrompt
+        // The skill index is cheap (name + description per line) and independent of the memory
+        // toggle: knowing which procedures exist is useful even with long-term memory off.
+        val skillIndex = skillLibrary.index()
+        if (!_longTermMemoryEnabled.value) {
+            return ContextManager.buildSystemPrompt(timedPrompt, emptyList(), emptyList(), skillIndex)
+        }
         return try {
             val memories = memoryRepository.recall(userMessage, limit = 5)
             val learnings = memoryRepository.getByType(MemoryItemEntity.TYPE_LEARNING)
                 .filter { it.status == MemoryItemEntity.STATUS_ACTIVE }
-            ContextManager.buildSystemPrompt(timedPrompt, memories, learnings)
+            ContextManager.buildSystemPrompt(timedPrompt, memories, learnings, skillIndex)
         } catch (_: Exception) {
-            timedPrompt
+            ContextManager.buildSystemPrompt(timedPrompt, emptyList(), emptyList(), skillIndex)
         }
+    }
+
+    /** Reloads the skill list for the UI (the tools read the folder directly on every call). */
+    fun refreshSkills() {
+        scope.launch { _skills.value = skillLibrary.load() }
+    }
+
+    /**
+     * Runs due scheduled tasks once. Called by the in-app ticker and by SchedulerWork, so both
+     * paths share exactly one implementation of the scheduling rules.
+     */
+    suspend fun runSchedulerTick() = scheduler.tick()
+
+    // ==================================================================================
+    // Auto reflection — periodic self-review through the existing scheduler
+    // ==================================================================================
+
+    /**
+     * Creates, updates or pauses the scheduled self-reflection task.
+     *
+     * Reflection used to depend on the model *remembering* to call `reflect`. This reuses the
+     * scheduler the app already ships (persistent row, 60 s ticker, results delivered to the chat)
+     * instead of inventing a second timer, so a long-running agent actually accumulates lessons.
+     * The report goes to the most recent conversation; if no chat exists yet there is nothing to
+     * report to, so the task is simply not created.
+     */
+    private suspend fun syncAutoReflection() {
+        val existing = scheduledTaskDao.getAll().firstOrNull { it.name == AUTO_REFLECT_TASK_NAME }
+        if (!_autoReflectEnabled.value) {
+            if (existing != null && existing.enabled) scheduler.setEnabled(existing.id, false)
+            return
+        }
+
+        val hours = _autoReflectIntervalHours.value.coerceIn(1, MAX_AUTO_REFLECT_HOURS)
+        val schedule = "interval:${hours * 3600L}"
+        val conversationId = existing?.conversationId?.takeIf { it.isNotBlank() }
+            ?: sessionRepository.getAllSessions().firstOrNull()?.conversationId
+            ?: return
+
+        if (existing == null) {
+            scheduler.create(AUTO_REFLECT_TASK_NAME, schedule, AUTO_REFLECT_PROMPT, conversationId)
+            agentLoop.log("AUTO_REFLECT", "Aktif: refleksi tiap $hours jam ke $conversationId")
+            return
+        }
+
+        val intervalSeconds = SchedulerEngine.parseIntervalSeconds(schedule) ?: return
+        scheduledTaskDao.upsert(
+            existing.copy(
+                schedule = schedule,
+                prompt = AUTO_REFLECT_PROMPT,
+                conversationId = conversationId,
+                enabled = true,
+                nextRunAt = System.currentTimeMillis() + intervalSeconds * 1000
+            )
+        )
+        agentLoop.log("AUTO_REFLECT", "Diperbarui: refleksi tiap $hours jam")
+    }
+
+    fun setAutoReflectEnabled(enabled: Boolean) {
+        _autoReflectEnabled.value = enabled
+        scope.launch { syncAutoReflection() }
+        persistConfig()
+    }
+
+    fun setAutoReflectIntervalHours(hours: Int) {
+        _autoReflectIntervalHours.value = hours.coerceIn(1, MAX_AUTO_REFLECT_HOURS)
+        scope.launch { syncAutoReflection() }
+        persistConfig()
+    }
+
+    /** Runs the self-reflection immediately (same task the scheduler would run). */
+    fun runAutoReflectionNow() = scope.launch {
+        syncAutoReflection()
+        val task = scheduledTaskDao.getAll().firstOrNull { it.name == AUTO_REFLECT_TASK_NAME }
+        if (task == null) {
+            agentLoop.log("AUTO_REFLECT", "Belum ada task refleksi (aktifkan dulu atau mulai satu chat).")
+            return@launch
+        }
+        scheduler.runNow(task.id)
     }
 
     // ==================================================================================

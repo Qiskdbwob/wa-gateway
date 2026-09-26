@@ -63,9 +63,17 @@ object ContextManager {
     fun buildSystemPrompt(
         basePrompt: String,
         relevantMemories: List<MemoryItemEntity>,
-        activeLearnings: List<MemoryItemEntity>
+        activeLearnings: List<MemoryItemEntity>,
+        /** Index of markdown skills (one line each); the body is fetched with `read_skill`. */
+        skillIndex: List<String> = emptyList()
     ): String {
         val sb = StringBuilder(basePrompt.trim())
+
+        if (skillIndex.isNotEmpty()) {
+            sb.append("\n\n## Skill tersedia (prosedur yang bisa dipakai ulang)\n")
+                .append(skillIndex.joinToString("\n"))
+                .append("\n(Baca isinya dengan read_skill sebelum dipakai; simpan prosedur baru dengan save_skill.)")
+        }
 
         if (activeLearnings.isNotEmpty()) {
             val learnings = joinCapped(

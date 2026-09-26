@@ -79,6 +79,13 @@ fun SettingsScreen(
     val browserPasswordInput by viewModel.browserPasswordInput.collectAsState()
     val apiKey by viewModel.agentApiKey.collectAsState()
     val apiKeyPool by viewModel.agentApiKeyPool.collectAsState()
+    val autoReflectEnabled by viewModel.autoReflectEnabled.collectAsState()
+    val autoReflectIntervalHours by viewModel.autoReflectIntervalHours.collectAsState()
+    val mcpServers by viewModel.mcpServers.collectAsState()
+    val mcpStatuses by viewModel.mcpStatuses.collectAsState()
+    val mcpNameInput by viewModel.mcpNameInput.collectAsState()
+    val mcpUrlInput by viewModel.mcpUrlInput.collectAsState()
+    val mcpHeadersInput by viewModel.mcpHeadersInput.collectAsState()
     val modelId by viewModel.agentModelId.collectAsState()
     val systemPrompt by viewModel.agentSystemPrompt.collectAsState()
     val useEchoFallback by viewModel.useEchoFallback.collectAsState()
@@ -619,6 +626,66 @@ fun SettingsScreen(
 
                 Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
 
+                // Periodic self-reflection: reuses the scheduler, so it survives app restarts.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Refleksi otomatis",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Agent meninjau pekerjaan terakhir secara berkala dan menyimpan pelajaran",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = autoReflectEnabled,
+                        onCheckedChange = { viewModel.setAutoReflectEnabled(it) },
+                        modifier = Modifier.testTag("settings_auto_reflect_switch")
+                    )
+                }
+
+                if (autoReflectEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "Interval refleksi", style = MaterialTheme.typography.bodyMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                viewModel.setAutoReflectIntervalHours(autoReflectIntervalHours - 1)
+                            }) { Text("−", fontWeight = FontWeight.Bold) }
+                            Text(
+                                text = "$autoReflectIntervalHours jam",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            IconButton(onClick = {
+                                viewModel.setAutoReflectIntervalHours(autoReflectIntervalHours + 1)
+                            }) { Text("+", fontWeight = FontWeight.Bold) }
+                        }
+                    }
+
+                    Button(onClick = { viewModel.runAutoReflectionNow() }) {
+                        Text("Jalankan refleksi sekarang")
+                    }
+
+                    Text(
+                        text = "Hasil refleksi dikirim ke percakapan terakhir. Bila belum ada chat, " +
+                            "task-nya dibuat saat chat pertama muncul.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -965,7 +1032,95 @@ fun SettingsScreen(
             }
         }
 
-        // 9. Developer & Diagnostik
+        // 9. MCP Connector
+        SectionHeader(title = "MCP Connector", icon = Icons.Default.Extension)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Hubungkan server MCP (Model Context Protocol) untuk menambah tool agent " +
+                        "tanpa mengubah aplikasi. Header opsional untuk token: satu 'Key: Value' per baris.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (mcpServers.isNotEmpty()) {
+                    mcpServers.forEach { server ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = server.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = server.url + " • " + (mcpStatuses[server.id] ?: "belum diperiksa"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = server.enabled,
+                                onCheckedChange = { viewModel.setMcpServerEnabled(server.id, it) }
+                            )
+                            IconButton(onClick = { viewModel.removeMcpServer(server.id) }) {
+                                Text("×", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "Belum ada server MCP.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                OutlinedTextField(
+                    value = mcpNameInput,
+                    onValueChange = { viewModel.mcpNameInput.value = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_mcp_name"),
+                    label = { Text("Nama server (contoh: github)") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = mcpUrlInput,
+                    onValueChange = { viewModel.mcpUrlInput.value = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_mcp_url"),
+                    label = { Text("URL MCP (https://…/mcp)") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = mcpHeadersInput,
+                    onValueChange = { viewModel.mcpHeadersInput.value = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Header (opsional, satu per baris)") },
+                    placeholder = { Text("Authorization: Bearer …") },
+                    minLines = 2,
+                    maxLines = 4
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { viewModel.addMcpServer() }) {
+                        Text("Tambah Server")
+                    }
+                    OutlinedButton(onClick = { viewModel.refreshMcpTools() }) {
+                        Text("Muat Ulang Tool")
+                    }
+                }
+            }
+        }
+
+        // 10. Developer & Diagnostik
         SectionHeader(title = "Developer & Diagnostik", icon = Icons.Default.BugReport)
 
         Card(

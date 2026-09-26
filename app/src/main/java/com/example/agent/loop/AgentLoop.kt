@@ -116,6 +116,33 @@ class AgentLoop(
     private val _activityLogs = MutableStateFlow<List<String>>(emptyList())
     val activityLogs: StateFlow<List<String>> = _activityLogs.asStateFlow()
 
+    /**
+     * One model call, in the shape a dashboard needs: which provider/model, how long it took, how
+     * many tokens it burned, and whether it worked. The log lines already carry this text; having
+     * it as a value is what lets the Developer screen show numbers instead of a wall of text.
+     */
+    data class ModelCallMetric(
+        val timestamp: Long = System.currentTimeMillis(),
+        val provider: String,
+        val model: String,
+        val latencyMs: Long,
+        val totalTokens: Int,
+        val success: Boolean,
+        val detail: String = ""
+    )
+
+    /** Optional sink (the bridge keeps the last N calls for the Developer panel). */
+    @Volatile
+    var onModelCall: ((ModelCallMetric) -> Unit)? = null
+
+    private fun recordModelCall(metric: ModelCallMetric) {
+        try {
+            onModelCall?.invoke(metric)
+        } catch (_: Exception) {
+            // Metrics must never break a turn.
+        }
+    }
+
     /** Human readable tool activity of the running turn, e.g. "Menjalankan tool current_time...". */
     private val _currentActivity = MutableStateFlow<String?>(null)
     val currentActivity: StateFlow<String?> = _currentActivity.asStateFlow()
@@ -531,6 +558,16 @@ class AgentLoop(
                                 "MODEL_SUCCESS",
                                 "target=${target.id}, provider=${finalAgentResponse.provider}, model=${finalAgentResponse.model}, length=${finalAgentResponse.content.length}, latency=${modelResponse.latencyMs}ms, tokens=${finalAgentResponse.usage?.totalTokens ?: 0}"
                             )
+                            recordModelCall(
+                                ModelCallMetric(
+                                    provider = finalAgentResponse.provider.ifBlank { target.provider.name },
+                                    model = finalAgentResponse.model.ifBlank { requestModel },
+                                    latencyMs = modelResponse.latencyMs,
+                                    totalTokens = finalAgentResponse.usage?.totalTokens ?: 0,
+                                    success = true,
+                                    detail = "target=${target.id}, attempt=$modelAttempt"
+                                )
+                            )
                             break@targetLoop
 
                         } else {
@@ -544,6 +581,16 @@ class AgentLoop(
                             log(
                                 "MODEL_ERROR",
                                 "errorType=${classification.kind}, attempt=$modelAttempt, target=${target.id}, provider=${target.provider.name}, model=$requestModel, latency=${latencyMs}ms, error=${error.message}"
+                            )
+                            recordModelCall(
+                                ModelCallMetric(
+                                    provider = target.provider.name,
+                                    model = requestModel,
+                                    latencyMs = latencyMs,
+                                    totalTokens = 0,
+                                    success = false,
+                                    detail = "errorType=${classification.kind}, attempt=$modelAttempt"
+                                )
                             )
 
                             // Phase 6 — some OpenAI-compatible endpoints reject the "tools" field

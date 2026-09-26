@@ -33,6 +33,10 @@ data class AgentConfigEntity(
     val visionModelId: String = "gemini-2.0-flash",
     // --- General -------------------------------------------------------------------
     val agentName: String = "Personal AI Agent",
+    // --- Auto reflection (periodic self-review through the scheduler) ---------------
+    /** When true a scheduled task re-reads recent work and stores durable lessons. */
+    val autoReflectEnabled: Boolean = false,
+    val autoReflectIntervalHours: Int = 6,
     // --- Terminal (built-in shell tool) --------------------------------------------
     /** When false the `run_command`/`terminal_info` tools are not registered at all. */
     val terminalEnabled: Boolean = true,

@@ -62,6 +62,12 @@ antar kontak tidak pernah tercampur.
 | Unified search: satu tool `search` untuk memori, riwayat chat, task, file workspace & daftar tool | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Kesadaran waktu lokal: hari/tanggal/jam perangkat disuntik ke system prompt tiap turn, plus tool `current_time` | ✅ |
+| Skill markdown sederhana (`skills/*.md`, `list_skills`/`read_skill`/`save_skill`, indeks di prompt) | ✅ |
+| MCP connector (JSON-RPC over Streamable HTTP: `initialize`/`tools/list`/`tools/call`) | ✅ |
+| Refleksi otomatis terjadwal (memakai scheduler yang ada) | ✅ |
+| Scheduler tahan proses mati via WorkManager (ticker 15 menit) | ✅ |
+| `read_file` bertahap (`offset`/`limit` per baris, tanpa memotong tanpa jejak) | ✅ |
+| Probe model + panel token/latensi di Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
 | Kontrol akses kontak: whitelist & blacklist (per nomor, dinormalisasi dari JID) | ✅ |
 | Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
@@ -371,6 +377,32 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 * Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
   pengguna bahwa agent boleh mengendalikan sesi nyata.
 
+### Skill markdown, MCP connector & refleksi otomatis
+
+* **Skill markdown** (`skills/*.md` di workspace, format bebas tanpa front matter juga jalan):
+  `list_skills` untuk daftar, `read_skill` untuk membaca prosedur, `save_skill` supaya agent bisa
+  menuliskan sendiri cara yang berhasil. Yang masuk ke system prompt hanya **indeks** (nama +
+  deskripsi, dibatasi 25 skill/1.200 karakter) — isinya baru dibaca saat relevan, jadi rak skill
+  yang panjang tidak memakan konteks percakapan.
+* **MCP connector**: tambahkan server MCP di Pengaturan (nama, URL, header opsional — header berisi
+  token disimpan terenkripsi). Aplikasi melakukan `initialize` → `tools/list`, lalu setiap tool
+  server didaftarkan sebagai tool agent dengan nama `mcp__<server>__<tool>`. Hasil `tools/call`
+  (array `content` MCP) diratakan menjadi teks yang bisa dibaca model. Server bisa dinonaktifkan
+  (tool-nya langsung dicabut dari registry) atau dihapus.
+* **Refleksi otomatis**: toggle di Pengaturan → Memori. Saat aktif, bridge membuat satu task
+  terjadwal (`interval:N jam`, default 6 jam, maksimum 24) yang meminta agent meninjau pekerjaan
+  terakhir dan menyimpan 0–2 pelajaran lewat `reflect`/`save_skill`. Hasilnya dikirim ke percakapan
+  terakhir seperti task terjadwal lain. "Tidak ada pelajaran baru" adalah jawaban yang sah.
+* **Scheduler + WorkManager**: ticker 60 detik tetap jalan saat aplikasi hidup; `SchedulerWorker`
+  menambahkan wake-up periodik 15 menit dari sistem, jadi task yang jatuh tempo saat proses mati
+  tetap dieksekusi tanpa menunggu aplikasi dibuka.
+* **Observabilitas**: setiap panggilan model dicatat sebagai metrik (provider, model, latensi,
+  token, sukses/gagal). Tombol **Probe Model** di Developer menguji model aktif ("1 + 1 ="), dan
+  panel metrik menampilkan ringkasan + 5 panggilan terakhir.
+* **`read_file` bertahap**: `offset` (baris awal 1-based) dan `limit` (default 400, maksimum 2.000)
+  dengan info "baris X–Y dari Z" dan petunjuk `offset` berikutnya; batas 16.000 karakter tetap ada
+  sebagai pengaman kedua untuk file yang satu barisnya sangat panjang.
+
 ### Keys pool (banyak API key) & unified search
 
 * **Keys pool.** Pengaturan → Model & Provider kini punya field **“Keys Pool (opsional)”**: satu
@@ -406,18 +438,19 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 * Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
   dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). Bila API key vision
   belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
-* Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
+* Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
+  skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
   `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
   `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,
   `browser_logout`. MCP, Linux sandbox/proot dan skill markdown belum ada — dokumen referensinya
   sudah disimpan di `DOC/reference/` untuk fase berikutnya.
-* Scheduler berjalan dari proses aplikasi (ticker 60 detik). Bila sistem mematikan proses, task baru
-  dieksekusi setelah aplikasi dibuka lagi; eksekusi latar penuh (WorkManager/foreground service)
-  belum dipakai.
-* `read_file` memotong isi pada 16.000 karakter dan memberi tahu model bahwa isinya dipotong;
-  pembacaan bertahap (offset/limit) belum ada.
+* Scheduler: ticker 60 detik saat aplikasi hidup + wake-up WorkManager tiap 15 menit saat proses
+  dimatikan sistem. Jadi eksekusi tidak lagi menunggu aplikasi dibuka, tetapi tidak presisi ke
+  detik dalam kondisi proses mati (WorkManager minimum 15 menit).
+* `read_file` tetap dibatasi 16.000 karakter per panggilan; pembacaan bertahap sekarang tersedia
+  (`offset`/`limit` per baris), tetapi belum ada pencarian di dalam file (pakai `search`).
 * Terminal memakai shell perangkat: tanpa toolchain tambahan, `python`/`node`/`git`/`gh` tidak
   tersedia. Linux penuh (proot/rootfs) belum ada — lihat `DOC/reference/linux-sandbox/`.
 * Browser automation memakai WebView Android (bukan GeckoView) dan bergantung pada layout halaman;

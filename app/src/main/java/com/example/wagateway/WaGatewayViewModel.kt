@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.agent.bridge.WhatsAppAgentBridge
 import com.example.agent.browser.BrowserAutomationManager
 import com.example.agent.browser.SiteCredential
+import com.example.agent.loop.AgentLoop
+import com.example.agent.skills.Skill
 import com.example.agent.terminal.TerminalState
 import com.example.agent.loop.AgentState
 import com.example.agent.loop.isBusy
@@ -17,6 +19,7 @@ import com.example.agent.model.Tool
 import com.example.agent.provider.ProviderKeyPool
 import com.example.agent.storage.ContactAccessRepository
 import com.example.agent.storage.entity.AgentTaskEntity
+import com.example.agent.storage.entity.McpServerEntity
 import com.example.agent.storage.entity.ApprovalRequestEntity
 import com.example.agent.storage.entity.ContactRuleEntity
 import com.example.agent.storage.entity.MemoryItemEntity
@@ -68,6 +71,91 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     val agentState: StateFlow<AgentState> = agentBridge.agentLoop.state
     val agentLastError: StateFlow<String?> = agentBridge.agentLoop.lastError
     val agentLogs: StateFlow<List<String>> = agentBridge.agentLoop.activityLogs
+
+    /** Last model calls with latency + tokens (Developer panel). */
+    val modelMetrics: StateFlow<List<AgentLoop.ModelCallMetric>> = agentBridge.modelMetrics
+
+    private val _probeResult = MutableStateFlow<String?>(null)
+    val probeResult: StateFlow<String?> = _probeResult.asStateFlow()
+    private val _isProbing = MutableStateFlow(false)
+    val isProbing: StateFlow<Boolean> = _isProbing.asStateFlow()
+
+    /** Markdown skills in the workspace (`skills/*.md`). */
+    val skills: StateFlow<List<Skill>> = agentBridge.skills
+
+    /** Periodic self-reflection settings (executed by the scheduler). */
+    val autoReflectEnabled: StateFlow<Boolean> = agentBridge.autoReflectEnabled
+    val autoReflectIntervalHours: StateFlow<Int> = agentBridge.autoReflectIntervalHours
+
+    /** MCP servers + their discovery status. */
+    val mcpServers: StateFlow<List<McpServerEntity>> = agentBridge.mcpManager.servers
+    val mcpStatuses: StateFlow<Map<String, String>> = agentBridge.mcpManager.statuses
+    val mcpNameInput = MutableStateFlow("")
+    val mcpUrlInput = MutableStateFlow("")
+    val mcpHeadersInput = MutableStateFlow("")
+
+    /** Probes the configured model and reports availability + latency. */
+    fun probeModel() {
+        if (_isProbing.value) return
+        viewModelScope.launch {
+            _isProbing.value = true
+            _probeResult.value = "Menghubungi model…"
+            try {
+                val probe = agentBridge.probeCurrentModel()
+                _probeResult.value = if (probe.available) {
+                    "✅ ${agentBridge.providerConfig.value.modelId} siap — ${probe.latencyMs} ms"
+                } else {
+                    "❌ ${probe.error ?: "model tidak merespons"} (${probe.latencyMs} ms)"
+                }
+            } catch (e: Exception) {
+                _probeResult.value = "❌ Probe gagal: ${e.message}"
+            } finally {
+                _isProbing.value = false
+            }
+        }
+    }
+
+    fun refreshSkills() = agentBridge.refreshSkills()
+
+    fun setAutoReflectEnabled(enabled: Boolean) = agentBridge.setAutoReflectEnabled(enabled)
+
+    fun setAutoReflectIntervalHours(hours: Int) = agentBridge.setAutoReflectIntervalHours(hours)
+
+    fun runAutoReflectionNow() {
+        agentBridge.runAutoReflectionNow()
+        _sendFeedback.value = "Refleksi otomatis dijalankan; hasilnya dikirim ke chat terakhir."
+    }
+
+    fun addMcpServer() {
+        val name = mcpNameInput.value
+        val url = mcpUrlInput.value
+        val headers = mcpHeadersInput.value
+        viewModelScope.launch {
+            _sendFeedback.value = "Menghubungi MCP server…"
+            val message = agentBridge.addMcpServer(name, url, headers)
+            _sendFeedback.value = message
+            if (!message.contains("Gagal") && !message.contains("wajib") && !message.contains("harus")) {
+                mcpNameInput.value = ""
+                mcpUrlInput.value = ""
+                mcpHeadersInput.value = ""
+            }
+        }
+    }
+
+    fun removeMcpServer(id: String) {
+        viewModelScope.launch {
+            agentBridge.removeMcpServer(id)
+            _sendFeedback.value = "MCP server dihapus."
+        }
+    }
+
+    fun setMcpServerEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch { agentBridge.setMcpServerEnabled(id, enabled) }
+    }
+
+    fun refreshMcpTools() {
+        viewModelScope.launch { _sendFeedback.value = agentBridge.refreshMcpTools() }
+    }
     val agentCurrentActivity: StateFlow<String?> = agentBridge.agentLoop.currentActivity
 
     /** Phase 6: tools registered on the Agent Loop, shown on the Developer screen. */

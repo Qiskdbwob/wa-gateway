@@ -48,7 +48,7 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 - ✅ Model probe `"1 + 1 ="` untuk cek ketersediaan & latensi (`ModelRouter.probeModel`).
 - 🟡 Provider Gemini native — **hanya untuk vision** (`GeminiVisionProvider`); teks tetap lewat
   endpoint OpenAI-compatible.
-- 🟡 Model probe belum punya tombol di UI (logikanya ada di `ModelRouter`, belum diekspos ke layar).
+- ✅ Tombol **Probe Model** di layar Developer (menampilkan hasil + latensi).
 - 🟡 Konfigurasi combo/urutan fallback belum ada formnya di Pengaturan (chain di-set dari kode/router).
 - ❌ Provider Anthropic Claude native.
 - ✅ Keys pool: field "Keys Pool" di Pengaturan (satu kunci per baris), dipakai bergiliran dengan
@@ -89,12 +89,19 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
   `CookieManager.flush()` agar cookie langsung tertulis ke disk. Sesi hanya dihapus oleh
   `browser_logout`, yang membersihkan cookie + cache + form data + history.
 - 🟡 Web search baru **DuckDuckGo**; belum ada opsi Bing.
-- 🟡 `read_file` memotong di 16.000 karakter; pembacaan bertahap (offset/limit) belum ada.
+- ✅ `read_file` bertahap: `offset`/`limit` per baris (default 400, maks 2.000) + info baris dan
+  petunjuk lanjutan; batas 16.000 karakter tetap sebagai pengaman kedua.
 - 🟡 Browser memakai **WebView Android**, belum GeckoView (antarmuka `BrowserEngine` siap ditukar).
 - ✅ Shell interaktif di aplikasi (layar Terminal): shell persisten, `cd` persist, exit code per perintah, cap 1.500 baris.
 - ❌ Sandbox Linux penuh (proot/rootfs) supaya `apt`/`pip` nyata tersedia tanpa toolchain pengguna.
-- ❌ Skill markdown universal (hermes/openclaw/claude code) — tab Skills masih empty state.
-- ❌ MCP connector (HTTP/HTTPS/SSE: name + base URL + headers).
+- ✅ Skill markdown (`skills/*.md`): `list_skills`, `read_skill`, `save_skill`; indeks (nama +
+  deskripsi) disuntik ke system prompt, isi dibaca saat perlu; tab Skills di layar Memori
+  menampilkan skill yang benar-benar ada. Format milik sendiri (front matter opsional), bukan
+  format hermes/openclaw — itu tetap tidak ada.
+- ✅ MCP connector: `initialize` → `tools/list` → `tools/call` (JSON-RPC over Streamable HTTP,
+  respons JSON maupun SSE), sesi `Mcp-Session-Id` dihormati, tool didaftarkan sebagai
+  `mcp__<server>__<tool>`, header token disimpan terenkripsi, server bisa dinonaktifkan/dihapus.
+  Catatan: belum ada Resources/Prompts/Sampling — sengaja hanya Tools.
 
 ## 5. Memori, RAG, Knowledge Base & learning
 
@@ -105,8 +112,9 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 - ✅ Learning pipeline: `candidate → active` (`/learning approve|reject`, tombol di layar Memori).
 - ✅ Refleksi/pelajaran dari pengalaman (`reflect`) bisa dipakai lagi di turn berikutnya.
 - ✅ Knowledge memory (fakta yang diminta diingat) via `remember` / `/remember`.
-- 🟡 "Memory episodic + refleksi berkala (generative agents)": refleksi berjalan saat model memanggil
-  tool `reflect`, belum ada loop refleksi otomatis/periodik terjadwal.
+- ✅ Refleksi otomatis terjadwal: toggle "Refleksi otomatis" + interval jam (default 6, maks 24)
+  membuat task terjadwal yang meminta agent meninjau pekerjaan terakhir dan menyimpan pelajaran;
+  ada juga tombol "Jalankan refleksi sekarang". Refleksi ad-hoc via tool `reflect` tetap ada.
 - 🟡 Knowledge Base = memori KNOWLEDGE (belum ada import/export dokumen eksternal).
 - ✅ Unified search `search(query, scope, limit)` (`builtin.search`, AUTO_SAFE, lokal tanpa jaringan)
   untuk scope `chat / memory / tasks / files / tools` (plus `all`). Ranking leksikal: frasa di judul
@@ -133,8 +141,9 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 - ✅ Eksekusi task terjadwal lewat AgentLoop, hasil dikirim ke chat asal, status COMPLETED/FAILED dicatat.
 - ✅ Jadwal berikutnya ditentukan **sebelum** eksekusi (anti dobel-jalan).
 - ✅ UI Tugas: filter Scheduled / Sub-agent / Completed / Failed + aksi pause, resume, run now, delete.
-- 🟡 Scheduler berjalan dari proses aplikasi; kalau proses dimatikan sistem, task baru jalan lagi
-  setelah aplikasi dibuka (WorkManager/foreground penuh belum dipakai).
+- ✅ Scheduler: ticker 60 detik di proses + `SchedulerWorker` (WorkManager) tiap 15 menit untuk
+  wake-up saat proses sudah dimatikan sistem. Presisi dalam kondisi proses mati mengikuti minimum
+  WorkManager (15 menit), bukan per detik.
 
 ## 8. Media WhatsApp
 
@@ -152,9 +161,10 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
   TOOL_RESULT / RETRY_STARTED / MODEL_SUCCESS / AGENT_FAILURE / ...`).
 - ✅ Log peralihan model (retry & fallback) tampil sebagai aktivitas + di Developer → raw logs.
 - ✅ Log penggunaan tool oleh model (nama tool, latensi, hasil).
-- 🟡 Token usage dihitung & dicatat di log, tetapi belum ditampilkan sebagai angka di dashboard.
-- 🟡 Latensi per request tercatat di log, tetapi belum ada panel metrik di dashboard.
-- 🟡 Developer & Debug: interactive test console, Tool Registry, diagnostics, raw logs (belum ada tombol probe latensi).
+- ✅ Panel metrik di Developer: provider/model, latensi, token, sukses/gagal per panggilan
+  (50 panggilan terakhir) + ringkasan rata-rata latensi dan total token.
+- ✅ Latensi + token per request tampil sebagai angka di panel metrik Developer (bukan cuma log).
+- ✅ Developer & Debug: interactive test console, Tool Registry, diagnostics, raw logs, tombol probe model, dan panel metrik model.
 
 ## 10. UI / layout aplikasi
 
@@ -185,10 +195,14 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
 | — | Kirim hasil kerja agent (file/screenshot) ke chat WhatsApp | ✅ |
 | — | Keys pool (rotasi banyak API key saat rate limit/quota) | ✅ |
 | — | Unified search lintas memori, chat, task, file & daftar tool | ✅ |
+| — | Skill markdown (`skills/*.md` + 3 tool + indeks prompt + tab Skills) | ✅ |
+| — | MCP connector (tools/list + tools/call) | ✅ |
+| — | Refleksi otomatis terjadwal + scheduler tahan proses mati (WorkManager) | ✅ |
+| — | `read_file` bertahap (offset/limit) + probe model & panel metrik | ✅ |
 
 ## Yang belum ada (dan sengaja tidak dipalsukan)
 
-Sandbox Linux penuh (proot/rootfs), MCP connector, skill markdown universal,
+Sandbox Linux penuh (proot/rootfs), format skill universal hermes/openclaw, Resources/Prompts MCP,
 provider Anthropic native, transkripsi audio, transkrip media besar.
 
 Dokumen referensi untuk yang belum ada sudah disimpan di `DOC/reference/`

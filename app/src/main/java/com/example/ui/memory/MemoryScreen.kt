@@ -45,6 +45,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -137,6 +138,7 @@ enum class MemoryCategory(val label: String, val icon: ImageVector) {
     EPISODIC("Episodic Memory", Icons.Default.History),
     KNOWLEDGE("Knowledge", Icons.Default.Psychology),
     SKILLS("Skills", Icons.Default.AutoAwesome),
+
     LEARNING("Learning", Icons.Default.Lightbulb)
 }
 
@@ -150,6 +152,7 @@ fun MemoryScreen(
     val episodicMemories by viewModel.episodicMemories.collectAsState()
     val knowledgeMemories by viewModel.knowledgeMemories.collectAsState()
     val learnings by viewModel.learnings.collectAsState()
+    val skills by viewModel.skills.collectAsState()
     val newMemoryInput by viewModel.newMemoryInput.collectAsState()
     val systemPrompt by viewModel.agentSystemPrompt.collectAsState()
     val modelId by viewModel.agentModelId.collectAsState()
@@ -490,11 +493,53 @@ fun MemoryScreen(
 
                 MemoryCategory.SKILLS -> {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        EmptyStateCard(
-                            icon = Icons.Default.AutoAwesome,
-                            title = "Belum ada skill agent",
-                            subtitle = "Sistem skill/tool eksternal belum diimplementasikan. Saat ini agent hanya menangani percakapan teks melalui model provider."
-                        )
+                        // Skills live as markdown files in the workspace; the list is reloaded when
+                        // this tab is opened so a file dropped in with `save_skill` shows up.
+                        LaunchedEffect(Unit) { viewModel.refreshSkills() }
+
+                        if (skills.isEmpty()) {
+                            EmptyStateCard(
+                                icon = Icons.Default.AutoAwesome,
+                                title = "Belum ada skill markdown",
+                                subtitle = "Agent menyimpan prosedur sebagai file .md di folder skills/ " +
+                                    "workspace (lewat tool save_skill), dan bisa juga Anda tulis sendiri."
+                            )
+                        } else {
+                            Text(
+                                text = "${skills.size} skill tersedia",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            skills.forEach { skill ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = skill.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (skill.description.isNotBlank()) {
+                                            Text(
+                                                text = skill.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Text(
+                                            text = skill.path,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         Text(
                             text = "Komponen Runtime Aktif",

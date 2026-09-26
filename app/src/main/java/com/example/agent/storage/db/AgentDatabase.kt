@@ -12,6 +12,7 @@ import com.example.agent.storage.dao.AgentSessionDao
 import com.example.agent.storage.dao.AgentTaskDao
 import com.example.agent.storage.dao.ApprovalRequestDao
 import com.example.agent.storage.dao.ContactRuleDao
+import com.example.agent.storage.dao.McpServerDao
 import com.example.agent.storage.dao.MemoryItemDao
 import com.example.agent.storage.dao.ScheduledTaskDao
 import com.example.agent.storage.entity.AgentConfigEntity
@@ -20,6 +21,7 @@ import com.example.agent.storage.entity.AgentSessionEntity
 import com.example.agent.storage.entity.AgentTaskEntity
 import com.example.agent.storage.entity.ApprovalRequestEntity
 import com.example.agent.storage.entity.ContactRuleEntity
+import com.example.agent.storage.entity.McpServerEntity
 import com.example.agent.storage.entity.MemoryItemEntity
 import com.example.agent.storage.entity.ScheduledTaskEntity
 
@@ -32,9 +34,10 @@ import com.example.agent.storage.entity.ScheduledTaskEntity
         MemoryItemEntity::class,
         ApprovalRequestEntity::class,
         ScheduledTaskEntity::class,
-        AgentTaskEntity::class
+        AgentTaskEntity::class,
+        McpServerEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AgentDatabase : RoomDatabase() {
@@ -47,6 +50,7 @@ abstract class AgentDatabase : RoomDatabase() {
     abstract fun approvalRequestDao(): ApprovalRequestDao
     abstract fun scheduledTaskDao(): ScheduledTaskDao
     abstract fun agentTaskDao(): AgentTaskDao
+    abstract fun mcpServerDao(): McpServerDao
 
     companion object {
         @Volatile
@@ -147,6 +151,24 @@ abstract class AgentDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v4 -> v5: periodic self-reflection settings plus the MCP server table. Both default to
+         * "nothing configured", so an existing install keeps working untouched.
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `autoReflectEnabled` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `autoReflectIntervalHours` INTEGER NOT NULL DEFAULT 6")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `mcp_servers` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`url` TEXT NOT NULL, `headers` TEXT NOT NULL, `enabled` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_mcp_servers_name` ON `mcp_servers` (`name`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_mcp_servers_enabled` ON `mcp_servers` (`enabled`)")
+            }
+        }
+
         fun getInstance(context: Context): AgentDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -154,7 +176,7 @@ abstract class AgentDatabase : RoomDatabase() {
                     AgentDatabase::class.java,
                     "agent_database.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 .also { INSTANCE = it }
             }
