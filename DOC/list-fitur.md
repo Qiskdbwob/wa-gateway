@@ -206,7 +206,26 @@ Sandbox Linux penuh (proot/rootfs), format skill universal hermes/openclaw, Reso
 provider Anthropic native, transkripsi audio, transkrip media besar.
 
 Dokumen referensi untuk yang belum ada sudah disimpan di `DOC/reference/`
-(`linux-sandbox/`, `terminal/builtin-terminal.md`, `browser-automation.md`).
+(`linux-sandbox/`, `terminal/builtin-terminal.md`, `browser-automation.md`). Rencana teknis sandbox
+(termasuk larangan eksekusi binary dari home dir di Android 10+/targetSdk 29 dan solusinya lewat
+`jniLibs`/`nativeLibraryDir`) ada di `DOC/riset-optimasi.md` bagian 3.1.
+
+## Catatan build & performa
+
+* Tiga varian: `debug` (paling lambat saat dijalankan — debuggable, tanpa R8), `optimized` (R8 +
+  resource shrinking, `isDebuggable = false`, ditandatangani debug key sehingga bisa dibuat CI tanpa
+  secret), `release` (bertanda tangan sungguhan, dari tag `v*`). Yang membuat debug terasa lambat
+  adalah ART yang menahan optimasi pada build debuggable, jadi `optimized` mewarisi `release`.
+* Workflow **Optimized APK** (`.github/workflows/optimized-apk.yml`) mengunggah
+  `wagateway-optimized-apk` + laporan R8, dan **gagal** bila `mapping.txt` tidak ada — bukti bahwa APK
+  itu benar-benar disusutkan, bukan sekadar diberi nama "optimized".
+* Keep-rules R8 mengunci kontrak JNI gomobile (`wagateway.**`, implementasi `WaEventListener`),
+  worker WorkManager, implementasi Room, dan `@JavascriptInterface`; kode `com.example.**` sengaja
+  belum di-obfuscate sampai APK `optimized` terbukti di perangkat. `release` masih
+  `isMinifyEnabled = false` untuk alasan yang sama.
+* WebView: renderer yang dimatikan sistem ditangani (`onRenderProcessGone` → buat ulang + muat ulang
+  URL terakhir, maksimal 3 kali) dan cookie pihak ketiga diterima agar login OAuth/iframe benar-
+  benar membentuk sesi. Keduanya belum pernah dipicu secara nyata di perangkat.
 
 ## Catatan waktu & sesi
 

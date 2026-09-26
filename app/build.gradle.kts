@@ -55,6 +55,24 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug { signingConfig = signingConfigs.getByName("debugConfig") }
+
+    // Release-grade build that CI can produce with no signing secrets at all: R8 + resource
+    // shrinking, not debuggable, signed with the debug key so it installs over a debug build.
+    // This is the artifact to compare against the debug APK when something "feels slow":
+    // `isDebuggable = false` (inherited from release) is what lets ART run the app optimized
+    // instead of in debug mode, and R8 removes the unused library code from the DEX.
+    //
+    // `release` itself keeps minification off for now: R8 runs against keep-rules that cannot
+    // be device-tested from this repository's CI, so the signed release path stays untouched
+    // until the optimized APK has been tried on a real device.
+    create("optimized") {
+      initWith(getByName("release"))
+      signingConfig = signingConfigs.getByName("debugConfig")
+      isMinifyEnabled = true
+      isShrinkResources = true
+      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      matchingFallbacks += listOf("release")
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11

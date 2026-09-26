@@ -124,7 +124,8 @@ Google Play (wajib menyediakan 64-bit bila menyediakan 32-bit) terpenuhi.
 
 ```bash
 gradle testDebugUnitTest     # unit test
-gradle assembleDebug         # APK debug
+gradle assembleDebug         # APK debug (lambat: debuggable, tanpa R8)
+gradle assembleOptimized     # APK rilis-grade: R8 + resource shrinking, non-debuggable
 ```
 
 > `app/libs/wagateway.aar` tidak di-commit. Tanpa file itu, kompilasi Kotlin akan gagal dengan
@@ -132,17 +133,22 @@ gradle assembleDebug         # APK debug
 
 ### 3. Lewat GitHub Actions
 
-`.github/workflows/build.yml` menjalankan tiga job:
+| Workflow | Job | Trigger | Hasil |
+|---|---|---|---|
+| `build.yml` | `gateway-aar` | semua push/PR | `wagateway.aar` (artifact) — memanggil workflow reusable `gateway-aar.yml` |
+| `build.yml` | `android` | butuh `gateway-aar` | unit test + `wagateway-debug-apk` |
+| `build.yml` | `release` | hanya tag `v*` | APK & AAB **bertanda tangan** + GitHub Release |
+| `optimized-apk.yml` | `optimized` | manual, push ke `main`, atau PR yang menyentuh keep-rules R8 / build config | **`wagateway-optimized-apk`** + laporan R8 |
 
-| Job | Trigger | Hasil |
-|---|---|---|
-| `gateway-aar` | semua push/PR | `wagateway.aar` (artifact) |
-| `android` | butuh `gateway-aar` | unit test + `wagateway-debug-apk` |
-| `release` | hanya tag `v*` | APK & AAB **bertanda tangan** + GitHub Release |
+Gradle di-provision otomatis sesuai versi di `gradlew` properties, jadi `gradle-wrapper.jar` tidak
+perlu di-commit. Build AAR Go dipecah ke `gateway-aar.yml` (reusable) agar Build dan Optimized APK
+memakai satu implementasi yang sama — target `gomobile bind` dan versi NDK tidak bisa lagi berbeda
+antar workflow.
 
-Workflow dibuat satu file agar artifact AAR bisa dipakai antar-job (menghindari mismatch nama
-artifact antar workflow). Gradle di-provision otomatis sesuai versi di `gradlew` properties,
-jadi `gradle-wrapper.jar` tidak perlu di-commit.
+APK `optimized` ditandatangani **debug key**, jadi tidak butuh secret apa pun dan bisa dipasang
+menimpa build debug di HP yang sama untuk membandingkan kecepatan secara langsung. Workflow-nya
+gagal dengan pesan jelas bila R8 ternyata tidak jalan (tidak ada `mapping.txt`), sehingga tidak ada
+APK "teroptimasi" yang sebenarnya belum disusutkan.
 
 ---
 
@@ -430,6 +436,27 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   yang butuh presisi detik atau zona waktu lain (`timezone_offset_hours`).
 * Blok waktu selalu disuntik, termasuk saat memori jangka panjang sedang dimatikan.
 
+### APK teroptimasi (R8) & pemulihan WebView
+
+* **Tiga varian build.** `debug` (cepat di-iterasi, lambat dijalankan), `optimized` (R8 + resource
+  shrinking, `isDebuggable = false`, ditandatangani debug key sehingga CI bisa memproduksinya tanpa
+  secret), dan `release` (bertanda tangan sungguhan, hanya dari tag). Yang membuat debug terasa
+  lambat bukan ukuran filenya saja, melainkan ART yang menahan optimasi pada build debuggable —
+  karena itu `optimized` mewarisi `release` (non-debuggable), bukan `debug`.
+* **Keep-rules R8** (`app/proguard-rules.pro`) mengunci kontrak yang tidak terlihat R8: kelas
+  `wagateway.**` dan implementasi `WaEventListener` (dipanggil balik dari Go via JNI berdasarkan
+  nama), worker `ListenableWorker` (dipulihkan WorkManager dari nama kelas), implementasi Room, dan
+  `@JavascriptInterface`. Kode `com.example.**` sengaja **tidak** di-obfuscate pada iterasi ini:
+  penyusutan & optimasi library tetap jalan (itulah sumber ukuran/kecepatan), sedangkan risikonya
+  tidak bisa diuji di perangkat dari CI. `release` masih `isMinifyEnabled = false` sampai APK
+  `optimized` terbukti di HP — satu baris untuk mengaktifkannya.
+* **Pemulihan renderer WebView.** WebView merender di proses terpisah dan Android boleh
+  mematikannya; instance yang renderer-nya mati tidak bisa dipakai lagi. Engine kini menangani
+  `onRenderProcessGone`: melepas & menghancurkan view lama, membuat view baru, dan memuat ulang URL
+  terakhir (maksimal 3 kali, lalu error dilaporkan apa adanya). Cookie ada di jar aplikasi sehingga
+  sesi login tidak hilang, dan cookie pihak ketiga kini diterima agar login lewat OAuth/iframe
+  benar-benar terbentuk. Detail riset + backlog: `DOC/riset-optimasi.md`.
+
 ## Batasan yang diketahui
 
 * Auto-reply hanya untuk chat pribadi (grup belum didukung).
@@ -444,8 +471,9 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
   `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,
-  `browser_logout`. MCP, Linux sandbox/proot dan skill markdown belum ada — dokumen referensinya
-  sudah disimpan di `DOC/reference/` untuk fase berikutnya.
+  `browser_logout` — plus tool `mcp__<server>__<tool>` untuk setiap server MCP yang Anda tambahkan.
+  Yang belum ada tinggal Linux sandbox penuh (proot/rootfs); rencana teknisnya ada di
+  `DOC/riset-optimasi.md` bagian 3.1 dan dossier `DOC/reference/linux-sandbox/`.
 * Scheduler: ticker 60 detik saat aplikasi hidup + wake-up WorkManager tiap 15 menit saat proses
   dimatikan sistem. Jadi eksekusi tidak lagi menunggu aplikasi dibuka, tetapi tidak presisi ke
   detik dalam kondisi proses mati (WorkManager minimum 15 menit).
@@ -459,6 +487,12 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   perangkat nyata melintasi restart aplikasi; situs yang sesinya berakhir di sisi server (atau
   memakai token yang tidak disimpan sebagai cookie) tetap akan meminta login lagi. `browser_logout`
   menghapus sesi dengan sengaja.
+* APK `optimized` (R8) sudah bisa diunduh dari CI, tetapi **belum pernah dijalankan di perangkat**
+  dari lingkungan ini: keep-rules R8 tidak bisa divalidasi tanpa menjalankan app. Karena itu
+  `release` masih memakai `isMinifyEnabled = false` sampai Anda mencoba APK `optimized` dan
+  melaporkan hasilnya; setelah itu satu baris di `app/build.gradle.kts` mengaktifkannya untuk rilis.
+* Pemulihan renderer WebView (buat ulang + muat ulang URL setelah renderer dimatikan sistem) juga
+  belum pernah dipicu secara nyata di perangkat — hanya jalur kodenya yang masuk CI.
 * Shell persisten di layar Terminal hidup selama proses aplikasi hidup; belum ada
   keepalive/foreground service khusus terminal (gateway service yang menjaga proses).
 * `applicationId` masih memakai nilai bawaan template.
@@ -466,13 +500,15 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 
 ## Roadmap berikutnya
 
-Sudah selesai pada iterasi ini: kontrol akses kontak, command chat, approval destruktif, memori
-jangka panjang + compact, subagent latar belakang, council & refleksi, scheduler, web tools, dan
-media WhatsApp masuk/keluar.
+Sudah selesai: kontrol akses kontak, command chat, approval destruktif, memori jangka panjang +
+compact, subagent latar belakang, council & refleksi (termasuk refleksi otomatis terjadwal),
+scheduler + WorkManager, web tools, media WhatsApp masuk/keluar, terminal bawaan, browser
+automation + serah terima captcha/2FA, keys pool, unified search, skill markdown, MCP connector,
+`read_file` bertahap, probe model + metrik, dan build `optimized` (R8).
 
-Urutan yang disarankan berikutnya: Observability lanjutan (kartu token & latensi di Beranda) →
-Knowledge UI (skill markdown) → MCP connector → sandbox Linux/proot (kalau perlu `apt`/`pip`
-nyata di perangkat).
+Urutan yang disarankan berikutnya (alasan & estimasi biaya ada di `DOC/riset-optimasi.md`):
+uji APK `optimized` di HP → aktifkan R8 untuk `release` → sandbox Linux penuh (proot + Alpine
+lewat `nativeLibraryDir`, lihat bagian 3.1) → baseline profile untuk start dingin.
 
 Dokumen rencana lengkap ada di `DOC/`. Dossier referensi untuk sandbox Linux, terminal bawaan, dan
 browser automation (transfer spec lengkap, bukan sekadar ringkasan) ada di `DOC/reference/`.
