@@ -88,16 +88,24 @@ object ProviderKeyPool {
     }
 }
 
+/**
+ * The HTTP client every provider instance shares. With several providers configured, each
+ * instance having its own client would mean several connection pools and thread pools for no
+ * benefit — the timeouts are the only thing that has to stay per-request, and they do.
+ */
+fun defaultModelHttpClient(): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
 /** HTTP failure from a model endpoint; [status] lets callers decide (rotate key, retry, give up). */
 class ModelHttpException(val status: Int, message: String) : IOException(message)
 
 class OpenAiCompatibleProvider(
     private val configProvider: () -> ProviderConfig,
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val client: OkHttpClient = defaultModelHttpClient()
 ) : ModelProvider {
 
     override val id: String = "openai-compatible"

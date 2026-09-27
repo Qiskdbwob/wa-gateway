@@ -17,6 +17,11 @@ data class AgentConfigEntity(
      */
     val apiKeys: String = "",
     val modelId: String = "gpt-4o-mini",
+    /**
+     * Which row of the `providers` table serves requests. Empty means "pick the first usable
+     * one", which is also what a fresh install does before any provider exists.
+     */
+    val activeProviderId: String = "",
     val systemPrompt: String = "You are an intelligent, polite, and helpful AI assistant responding via WhatsApp. Keep responses concise, natural, and formatted nicely for WhatsApp.",
     // --- Priority 1: contact access control ---------------------------------------
     /** MODE_ALLOW = only whitelisted numbers may talk to the agent. MODE_OFF = everyone (except blacklist) may talk. */

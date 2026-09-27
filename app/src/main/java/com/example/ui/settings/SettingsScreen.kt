@@ -239,82 +239,10 @@ fun SettingsScreen(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "OpenAI Compatible API",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                // Base URL
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = { viewModel.agentBaseUrl.value = it },
-                    label = { Text("Base URL") },
-                    placeholder = { Text("https://api.openai.com/v1") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("settings_base_url"),
-                    shape = RoundedCornerShape(10.dp),
-                    singleLine = true
-                )
-
-                // API Key with secure toggle
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { viewModel.agentApiKey.value = it },
-                    label = { Text("API Key") },
-                    placeholder = { Text("sk-...") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("settings_api_key"),
-                    shape = RoundedCornerShape(10.dp),
-                    singleLine = true,
-                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showApiKey = !showApiKey }) {
-                            Icon(
-                                imageVector = if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = if (showApiKey) "Sembunyikan" else "Tampilkan"
-                            )
-                        }
-                    }
-                )
-
-                // Keys pool: extra keys rotated when the primary key is rate-limited/quota-ed.
-                OutlinedTextField(
-                    value = apiKeyPool,
-                    onValueChange = { viewModel.agentApiKeyPool.value = it },
-                    label = { Text("Keys Pool (opsional)") },
-                    placeholder = { Text("Satu kunci per baris\nsk-...\nsk-...") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("settings_api_key_pool"),
-                    shape = RoundedCornerShape(10.dp),
-                    minLines = 2,
-                    maxLines = 5,
-                    supportingText = {
-                        Text(
-                            text = "Dipakai bergiliran dengan API Key di atas. " +
-                                "Bila satu kunci kena limit (401/402/403/429), percobaan berikutnya " +
-                                "otomatis memakai kunci lain.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                )
-
-                // Model ID
-                OutlinedTextField(
-                    value = modelId,
-                    onValueChange = { viewModel.agentModelId.value = it },
-                    label = { Text("Model ID") },
-                    placeholder = { Text("gpt-4o-mini") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("settings_model_id"),
-                    shape = RoundedCornerShape(10.dp),
-                    singleLine = true
-                )
+                // One row per provider, each with its own base URL, model and key pool. The
+                // single base-URL/key/model fields that used to live here are gone: the same
+                // settings now belong to a provider, and several of them can coexist.
+                ProviderList(viewModel = viewModel)
 
                 Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
 

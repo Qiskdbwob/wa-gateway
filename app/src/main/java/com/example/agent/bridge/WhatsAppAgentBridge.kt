@@ -23,6 +23,9 @@ import com.example.agent.provider.ModelProvider
 import com.example.agent.provider.OpenAiCompatibleProvider
 import com.example.agent.provider.OpenAiVisionProvider
 import com.example.agent.provider.ProviderConfig
+import com.example.agent.provider.ProviderDescriptor
+import com.example.agent.provider.ProviderDirectory
+import com.example.agent.provider.defaultModelHttpClient
 import com.example.agent.provider.ProviderKeyPool
 import com.example.agent.provider.VisionProvider
 import com.example.agent.router.ModelProbeResult
@@ -37,6 +40,7 @@ import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.agentIdFromJid
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
+import com.example.agent.storage.entity.ProviderEntity
 import com.example.agent.storage.entity.AgentTaskEntity
 import com.example.agent.storage.entity.MemoryItemEntity
 import com.example.agent.subagent.SubAgentManager
@@ -134,6 +138,31 @@ class WhatsAppAgentBridge private constructor(
         AgentDatabase.getInstance(context)
     )
 
+    private val providerDao = AgentDatabase.getInstance(context).providerDao()
+
+    /** One HTTP client shared by every provider instance (see [defaultModelHttpClient]). */
+    private val providerHttpClient = defaultModelHttpClient()
+
+    /**
+     * Multi-provider: every configured provider in display order, keys already decrypted. This is
+     * the single source of truth — the Room table feeds it, and the router targets, the effective
+     * [providerConfig] and the settings UI all derive from it.
+     */
+    private val _providers = MutableStateFlow<List<ProviderDescriptor>>(emptyList())
+    val providers: StateFlow<List<ProviderDescriptor>> = _providers.asStateFlow()
+
+    private val _activeProviderId = MutableStateFlow("")
+    val activeProviderId: StateFlow<String> = _activeProviderId.asStateFlow()
+
+    /** Per-provider instances, created once and reused by the router. */
+    private val providerInstances = mutableMapOf<String, OpenAiCompatibleProvider>()
+
+    /**
+     * Effective configuration of the *active* provider. Compaction, subagents, the probe and the
+     * legacy save path all ask "which base URL and model do I use right now" without caring which
+     * row that came from, so this stays as the one answer — refreshed whenever the list or the
+     * selection changes.
+     */
     val providerConfig = MutableStateFlow(
         ProviderConfig(
             baseUrl = "https://api.openai.com/v1",
@@ -146,8 +175,14 @@ class WhatsAppAgentBridge private constructor(
         "You are an intelligent, polite, and helpful AI assistant responding via WhatsApp. Keep responses concise, natural, and formatted nicely for WhatsApp."
     )
 
+    /**
+     * Instance used by loops that run without a router, and as the pre-router fallback. It reads
+     * the effective [providerConfig], which always points at the active provider — so even the
+     * router-less path follows the multi-provider selection.
+     */
     private val openAiProvider = OpenAiCompatibleProvider(
-        configProvider = { providerConfig.value }
+        configProvider = { providerConfig.value },
+        client = providerHttpClient
     )
     private val echoProvider = EchoTestProvider()
 
@@ -392,8 +427,13 @@ class WhatsAppAgentBridge private constructor(
                     )
                     applyTerminalTools(toolRegistry, saved.terminalEnabled)
                     applyBrowserTools(toolRegistry, saved.browserEnabled)
+                    _activeProviderId.value = saved.activeProviderId
                     updateModelRouter()
                 }
+                // Multi-provider: turn a pre-multi-provider install into the first provider row
+                // (only while the table is still empty), then follow the rows from now on.
+                seedProvidersFromLegacy(saved)
+                scope.launch { observeProviders() }
                 // Approvals that expired while the app was closed.
                 approvalCoordinator.expireStale()
                 // Destructive tools are advertised only while approval routing is on.
@@ -587,30 +627,80 @@ class WhatsAppAgentBridge private constructor(
         }
     }
 
+    /**
+     * Rebuilds the router targets from the provider list: the active provider first, then every
+     * other usable provider in display order, then the optional echo fallback.
+     *
+     * This is the whole failover policy for multiple providers: the Agent Loop already walks its
+     * targets by priority and only gives up when the budget is spent, so "second provider" needs
+     * no new logic in the loop — it is simply the second target. Key rotation inside one provider
+     * stays where it was, in [OpenAiCompatibleProvider].
+     */
     private fun updateModelRouter() {
-        val targets = mutableListOf<ModelTarget>()
-        targets.add(
+        val ordered = ProviderDirectory.failoverOrder(_providers.value, _activeProviderId.value)
+        val targets = ordered.mapIndexed { index, descriptor ->
             ModelTarget(
-                id = "openai-primary",
-                provider = openAiProvider,
-                modelId = providerConfig.value.modelId,
-                priority = 0,
+                id = "provider-${descriptor.id}",
+                provider = instanceFor(descriptor),
+                modelId = descriptor.modelId,
+                priority = index,
                 enabled = true
             )
-        )
+        }.toMutableList()
+
         if (_useEchoFallback.value) {
             targets.add(
                 ModelTarget(
                     id = "echo-fallback",
                     provider = echoProvider,
                     modelId = "echo-model-v1",
-                    priority = 1,
+                    priority = targets.size,
                     enabled = true
                 )
             )
         }
         modelRouter.setTargets(targets)
+        refreshEffectiveProvider(ordered.firstOrNull())
     }
+
+    /**
+     * Points the shared "which model right now" state at the selected provider. Called whenever the
+     * list or the selection changes, so nothing has to re-derive it at the call site.
+     */
+    private fun refreshEffectiveProvider(active: ProviderDescriptor? = null) {
+        val current = active ?: ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value) ?: return
+        providerConfig.value = ProviderConfig(
+            baseUrl = current.baseUrl,
+            apiKey = current.keys.firstOrNull().orEmpty(),
+            modelId = current.modelId,
+            apiKeys = current.keys.drop(1)
+        )
+        agentLoop.agent = agentLoop.agent.copy(modelId = current.modelId)
+    }
+
+    /**
+     * One instance per provider row. The instance reads its row on every call, so editing a key or
+     * a base URL applies immediately without rebuilding the router.
+     */
+    private fun instanceFor(descriptor: ProviderDescriptor): OpenAiCompatibleProvider =
+        providerInstances.getOrPut(descriptor.id) {
+            OpenAiCompatibleProvider(
+                configProvider = {
+                    val row = _providers.value.firstOrNull { it.id == descriptor.id }
+                    if (row == null) {
+                        ProviderConfig(baseUrl = descriptor.baseUrl, modelId = descriptor.modelId)
+                    } else {
+                        ProviderConfig(
+                            baseUrl = row.baseUrl,
+                            apiKey = row.keys.firstOrNull().orEmpty(),
+                            modelId = row.modelId,
+                            apiKeys = row.keys.drop(1)
+                        )
+                    }
+                },
+                client = providerHttpClient
+            )
+        }
 
     fun setAutoReplyEnabled(enabled: Boolean) {
         _isAutoReplyEnabled.value = enabled
@@ -729,6 +819,172 @@ class WhatsAppAgentBridge private constructor(
         )
         updateModelRouter()
         persistConfig()
+        // The legacy single-provider save path now edits the active provider row too, so the old
+        // columns and the new table cannot drift apart.
+        scope.launch {
+            val active = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+                ?: return@launch
+            writeProvider(
+                active.copy(
+                    baseUrl = baseUrl.trim(),
+                    modelId = modelId.trim(),
+                    keys = ProviderDirectory.sanitizeKeys(listOf(apiKey) + ProviderKeyPool.parse(apiKeyPool))
+                )
+            )
+        }
+    }
+
+    // ==================================================================================
+    // Multi-provider (UI surface)
+    //
+    // Several providers can be configured, each with its own key pool. The active one serves
+    // requests; when its keys are exhausted the router moves on to the next usable provider, in
+    // the order shown in Settings. Everything below writes to Room and lets the table feed the
+    // in-memory list, so there is exactly one source of truth.
+    // ==================================================================================
+
+    /** Adds a provider; the first one added also becomes the active one. */
+    suspend fun addProvider(
+        label: String,
+        baseUrl: String,
+        modelId: String,
+        keysRaw: String
+    ): String {
+        val keys = ProviderDirectory.sanitizeKeys(ProviderKeyPool.parse(keysRaw))
+        val descriptor =
+            ProviderDescriptor(
+                id = ProviderDirectory.newProviderId(_providers.value.map { it.id }),
+                label = label.trim().ifBlank { "Provider ${_providers.value.size + 1}" },
+                baseUrl = baseUrl.trim().ifBlank { ProviderConfig().baseUrl },
+                modelId = modelId.trim().ifBlank { ProviderConfig().modelId },
+                keys = keys,
+                enabled = true,
+                sortOrder = ProviderDirectory.nextSortOrder(_providers.value)
+            )
+        writeProvider(descriptor)
+        if (_activeProviderId.value.isBlank()) setActiveProvider(descriptor.id)
+        val keyNote = if (keys.size > 1) "${keys.size} kunci (dirotasi otomatis)" else "${keys.size} kunci"
+        return "Provider \"${descriptor.label}\" ditambahkan dengan $keyNote."
+    }
+
+    /** Edits a provider in place; its keys become whatever the field now holds. */
+    suspend fun updateProvider(
+        id: String,
+        label: String,
+        baseUrl: String,
+        modelId: String,
+        keysRaw: String
+    ): String {
+        val existing = _providers.value.firstOrNull { it.id == id } ?: return "Provider tidak ditemukan."
+        val keys = ProviderDirectory.sanitizeKeys(ProviderKeyPool.parse(keysRaw))
+        writeProvider(
+            existing.copy(
+                label = label.trim().ifBlank { existing.label },
+                baseUrl = baseUrl.trim(),
+                modelId = modelId.trim(),
+                keys = keys
+            )
+        )
+        return "Provider \"${existing.displayLabel}\" diperbarui (${keys.size} kunci)."
+    }
+
+    suspend fun deleteProvider(id: String): String {
+        val existing = _providers.value.firstOrNull { it.id == id } ?: return "Provider tidak ditemukan."
+        providerInstances.remove(id)
+        providerDao.delete(id)
+        if (_activeProviderId.value == id) {
+            _activeProviderId.value = ""
+            persistConfig()
+        }
+        return "Provider \"${existing.displayLabel}\" dihapus."
+    }
+
+    /** Selects the provider that serves requests. */
+    fun setActiveProvider(id: String) {
+        _activeProviderId.value = id
+        persistConfig()
+        updateModelRouter()
+    }
+
+    suspend fun setProviderEnabled(id: String, enabled: Boolean) {
+        val existing = _providers.value.firstOrNull { it.id == id } ?: return
+        writeProvider(existing.copy(enabled = enabled))
+    }
+
+    /** Moves a provider one slot in the failover order. */
+    suspend fun moveProvider(id: String, delta: Int): String {
+        val reordered = ProviderDirectory.move(_providers.value, id, delta)
+        reordered.forEachIndexed { index, descriptor ->
+            if (descriptor.sortOrder != index) writeProvider(descriptor.copy(sortOrder = index))
+        }
+        return "Urutan provider diperbarui."
+    }
+
+    /** Writes a row, keeping the original creation timestamp on edits. */
+    private suspend fun writeProvider(descriptor: ProviderDescriptor) {
+        val existing = providerDao.getAll().firstOrNull { it.id == descriptor.id }
+        providerDao.upsert(
+            ProviderEntity(
+                id = descriptor.id,
+                label = descriptor.label,
+                baseUrl = descriptor.baseUrl,
+                modelId = descriptor.modelId,
+                keys = SecretCipher.encrypt(ProviderKeyPool.format(descriptor.keys)),
+                enabled = descriptor.enabled,
+                sortOrder = descriptor.sortOrder,
+                createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    private fun ProviderEntity.toDescriptor(): ProviderDescriptor =
+        ProviderDescriptor(
+            id = id,
+            label = label,
+            baseUrl = baseUrl,
+            modelId = modelId,
+            keys = ProviderDirectory.sanitizeKeys(ProviderKeyPool.parse(SecretCipher.decrypt(keys))),
+            enabled = enabled,
+            sortOrder = sortOrder
+        )
+
+    /**
+     * One-time upgrade path: an install that was configured before multi-provider existed becomes
+     * the first row, keys and all, so the user does not have to re-enter anything.
+     */
+    private suspend fun seedProvidersFromLegacy(saved: AgentConfigEntity?) {
+        if (providerDao.count() > 0) return
+        val primaryKey = SecretCipher.decrypt(saved?.apiKey.orEmpty())
+        val poolKeys = ProviderKeyPool.parse(SecretCipher.decrypt(saved?.apiKeys.orEmpty()))
+        val baseUrl = saved?.baseUrl.orEmpty()
+        if (baseUrl.isBlank() && primaryKey.isBlank() && poolKeys.isEmpty()) return
+        writeProvider(
+            ProviderDirectory.seedFromLegacy(
+                baseUrl = baseUrl,
+                modelId = saved?.modelId.orEmpty(),
+                keys = listOf(primaryKey) + poolKeys
+            )
+        )
+    }
+
+    /** Follows the provider table; every change re-derives the router targets. */
+    private suspend fun observeProviders() {
+        providerDao.observeAll().collect { rows ->
+            _providers.value = rows.map { it.toDescriptor() }
+            ensureActiveProvider()
+            updateModelRouter()
+        }
+    }
+
+    /** Keeps the selection pointing at a provider that exists and can answer. */
+    private fun ensureActiveProvider() {
+        val resolved = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+        val nextId = resolved?.id.orEmpty()
+        if (nextId != _activeProviderId.value) {
+            _activeProviderId.value = nextId
+            persistConfig()
+        }
     }
 
     // ==================================================================================
@@ -769,18 +1025,57 @@ class WhatsAppAgentBridge private constructor(
     /** How many distinct keys the provider may rotate through (1 = single key, no pool). */
     val apiKeyPoolSize: Int get() = providerConfig.value.keyPool().size
 
+    /** Probes whichever provider is currently selected (the Settings "Uji" button). */
     suspend fun probeCurrentModel(): ModelProbeResult {
-        val target = ModelTarget(
-            id = "openai-primary",
-            provider = openAiProvider,
-            modelId = providerConfig.value.modelId
-        )
-        return modelRouter.probeModel(target)
+        val active = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+            ?: return ModelProbeResult(
+                targetId = "none",
+                available = false,
+                latencyMs = 0,
+                error = "Belum ada provider aktif dengan API key"
+            )
+        return probeProvider(active)
     }
 
-    /** Resolves the current model provider for compact/summarize calls. */
-    private fun resolveProviderPair(): Pair<ModelProvider, String?> =
-        openAiProvider to providerConfig.value.modelId
+    /** Probes one provider by id; used by the per-provider test action. */
+    suspend fun probeProvider(id: String): ModelProbeResult {
+        val descriptor = _providers.value.firstOrNull { it.id == id }
+            ?: return ModelProbeResult(
+                targetId = id,
+                available = false,
+                latencyMs = 0,
+                error = "Provider tidak ditemukan"
+            )
+        return probeProvider(descriptor)
+    }
+
+    private suspend fun probeProvider(descriptor: ProviderDescriptor): ModelProbeResult {
+        if (descriptor.keys.isEmpty()) {
+            return ModelProbeResult(
+                targetId = "provider-${descriptor.id}",
+                available = false,
+                latencyMs = 0,
+                error = "Provider ini belum punya API key"
+            )
+        }
+        return modelRouter.probeModel(
+            ModelTarget(
+                id = "provider-${descriptor.id}",
+                provider = instanceFor(descriptor),
+                modelId = descriptor.modelId
+            )
+        )
+    }
+
+    /**
+     * Resolves the current model provider for compact/summarize calls and the other one-shot
+     * paths: the active provider's own instance, so those calls honour its base URL and key pool.
+     */
+    private fun resolveProviderPair(): Pair<ModelProvider, String?> {
+        val active = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+            ?: return openAiProvider to providerConfig.value.modelId
+        return instanceFor(active) to active.modelId
+    }
 
     private fun visionProvider(): VisionProvider? {
         val config = _visionConfig.value
@@ -808,6 +1103,7 @@ class WhatsAppAgentBridge private constructor(
                         apiKey = SecretCipher.encrypt(providerConfig.value.apiKey),
                         apiKeys = SecretCipher.encrypt(ProviderKeyPool.format(providerConfig.value.apiKeys)),
                         modelId = providerConfig.value.modelId,
+                        activeProviderId = _activeProviderId.value,
                         systemPrompt = systemPrompt.value,
                         whitelistMode = _whitelistMode.value,
                         longTermMemoryEnabled = _longTermMemoryEnabled.value,

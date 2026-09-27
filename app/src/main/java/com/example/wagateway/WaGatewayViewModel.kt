@@ -16,6 +16,7 @@ import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentSession
 import com.example.agent.model.Tool
+import com.example.agent.provider.ProviderDescriptor
 import com.example.agent.provider.ProviderKeyPool
 import com.example.agent.storage.ContactAccessRepository
 import com.example.agent.storage.entity.AgentTaskEntity
@@ -115,6 +116,57 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // ==================================================================================
+    // Multi-provider
+    // ==================================================================================
+
+    /** Per-provider probe result, keyed by provider id, shown under each row in Settings. */
+    private val _providerProbeResults = MutableStateFlow<Map<String, String>>(emptyMap())
+    val providerProbeResults: StateFlow<Map<String, String>> = _providerProbeResults.asStateFlow()
+
+    fun addProvider(label: String, baseUrl: String, modelId: String, keys: String) {
+        viewModelScope.launch {
+            _sendFeedback.value = agentBridge.addProvider(label, baseUrl, modelId, keys)
+        }
+    }
+
+    fun updateProvider(id: String, label: String, baseUrl: String, modelId: String, keys: String) {
+        viewModelScope.launch {
+            _sendFeedback.value = agentBridge.updateProvider(id, label, baseUrl, modelId, keys)
+        }
+    }
+
+    fun deleteProvider(id: String) {
+        viewModelScope.launch {
+            _sendFeedback.value = agentBridge.deleteProvider(id)
+        }
+    }
+
+    fun setActiveProvider(id: String) = agentBridge.setActiveProvider(id)
+
+    fun setProviderEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch { agentBridge.setProviderEnabled(id, enabled) }
+    }
+
+    fun moveProvider(id: String, delta: Int) {
+        viewModelScope.launch { _sendFeedback.value = agentBridge.moveProvider(id, delta) }
+    }
+
+    /** Probes one provider and keeps the result next to its row. */
+    fun probeProvider(id: String) {
+        viewModelScope.launch {
+            _providerProbeResults.value = _providerProbeResults.value + (id to "Menghubungi…")
+            val probe = agentBridge.probeProvider(id)
+            _providerProbeResults.value = _providerProbeResults.value + (
+                id to if (probe.available) {
+                    "✅ siap — ${probe.latencyMs} ms"
+                } else {
+                    "❌ ${probe.error ?: "tidak merespons"} (${probe.latencyMs} ms)"
+                }
+            )
+        }
+    }
+
     fun refreshSkills() = agentBridge.refreshSkills()
 
     fun setAutoReflectEnabled(enabled: Boolean) = agentBridge.setAutoReflectEnabled(enabled)
@@ -169,6 +221,14 @@ class WaGatewayViewModel(application: Application) : AndroidViewModel(applicatio
     /** Optional keys pool: one extra API key per line, rotated on rate limit/quota. */
     val agentApiKeyPool = MutableStateFlow(agentBridge.apiKeyPoolText)
     val agentModelId = MutableStateFlow(agentBridge.providerConfig.value.modelId)
+
+    /**
+     * Multi-provider: every configured provider in display order, and which one is selected. The
+     * legacy single-config fields above stay in sync with the active provider, so screens that
+     * only need "which model is answering" keep reading them.
+     */
+    val providers: StateFlow<List<ProviderDescriptor>> = agentBridge.providers
+    val activeProviderId: StateFlow<String> = agentBridge.activeProviderId
     val useEchoFallback: StateFlow<Boolean> = agentBridge.useEchoFallback
 
     // ==================================================================================

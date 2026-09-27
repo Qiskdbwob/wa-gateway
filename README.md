@@ -21,7 +21,7 @@ WhatsApp  ⇄  Go gateway (whatsmeow)  ⇄  Kotlin Bridge  ⇄  Agent Loop  ⇄ 
 | Transport WhatsApp | `go-wagateway/` | `NewClient / Connect / Disconnect / SendText / Logout`, event QR & pesan masuk, session SQLite di app-internal storage |
 | Binding | `app/libs/wagateway.aar` (dibuat CI) | Boundary gomobile Go ↔ Kotlin; hanya `String / Boolean / Long` yang melintas |
 | Gateway | `com.example.wagateway` | `WaGatewayManager` (StateFlow), `WaGatewayService` (foreground), `WaGatewayViewModel` |
-| Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
+| Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ProviderDirectory` (multi-provider: pilih aktif + urutan failover), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
 | Persistensi | `com.example.agent.storage` | Room: `agent_sessions`, `agent_messages`, `agent_configs` + `SecretCipher` (API key) |
 | Workspace | `com.example.agent.workspace` | `Workspace` — root per-agent di `filesDir/workspaces/<agentId>` + guard path (anti `..` & symlink escape) |
 | Adapter | `WhatsAppAgentBridge` | Menjembatani gateway ⇄ agent loop, memuat/menyimpan konfigurasi |
@@ -59,6 +59,7 @@ antar kontak tidak pernah tercampur.
 | Provider OpenAI-compatible + Echo fallback offline | ✅ |
 | Penyimpanan API key terenkripsi (Android Keystore, AES-256-GCM) | ✅ |
 | Keys pool: banyak API key dirotasi saat satu kunci kena limit/quota (401/402/403/429) | ✅ |
+| Multi-provider: beberapa provider (base URL + model + key pool masing-masing) dengan failover otomatis sesuai urutan | ✅ |
 | Unified search: satu tool `search` untuk memori, riwayat chat, task, file workspace & daftar tool | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Kesadaran waktu lokal: hari/tanggal/jam perangkat disuntik ke system prompt tiap turn, plus tool `current_time` | ✅ |
@@ -158,13 +159,16 @@ APK "teroptimasi" yang sebenarnya belum disusutkan.
 2. Pilih **QR** atau **Pairing Code**, lalu hubungkan akun WhatsApp Anda. Setelah tertaut, aplikasi
    akan **menyambung ulang otomatis** setiap dibuka — tidak perlu scan QR lagi. Pakai tombol
    **Putuskan Sesi** hanya bila ingin menautkan perangkat/akun lain dari awal.
-3. Isi **Base URL**, **API Key**, **Model ID**, dan **System Prompt** di Pengaturan.
+3. Di **Pengaturan → Model & Provider**, tekan **Tambah provider**: pilih preset (OpenAI, OpenRouter,
+   Groq, Gemini, DeepSeek) atau isi sendiri nama, **Base URL**, **Model ID**, dan **API key**
+   (satu per baris kalau punya beberapa). Isi **System Prompt** di bagian Persona.
 4. Aktifkan **Auto-Reply Pesan WhatsApp** di Beranda, atau ngobrol langsung di tab **Chat**.
 5. Cek status di Beranda, riwayat di tab **Tugas** & **Memori**.
 
 Provider apa pun yang kompatibel dengan API OpenAI (`POST {baseUrl}/chat/completions`) bisa dipakai —
-OpenAI, OpenRouter, LM Studio, Ollama, atau gateway internal. Bila API Key kosong dan Echo fallback
-aktif, agent tetap membalas secara lokal tanpa jaringan.
+OpenAI, OpenRouter, LM Studio, Ollama, atau gateway internal, dan **beberapa provider bisa aktif
+sekaligus** (lihat bagian Multi-provider). Bila tidak ada API key dan Echo fallback aktif, agent tetap
+membalas secara lokal tanpa jaringan.
 
 ---
 
@@ -409,17 +413,32 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   dengan info "baris X–Y dari Z" dan petunjuk `offset` berikutnya; batas 16.000 karakter tetap ada
   sebagai pengaman kedua untuk file yang satu barisnya sangat panjang.
 
-### Keys pool (banyak API key) & unified search
+### Multi-provider & keys pool
 
-* **Keys pool.** Pengaturan → Model & Provider kini punya field **“Keys Pool (opsional)”**: satu
-  kunci per baris, dipakai bergiliran dengan API Key utama. Kunci awalnya dirotasi (round-robin)
-  supaya beban tidak selalu jatuh ke kunci pertama, dan bila sebuah kunci gagal karena hal yang
-  memang soal kunci — `401`/`402`/`403` (ditolak/tagihan) atau `429` (rate limit/quota) — percobaan
-  berikutnya otomatis memakai kunci lain. Kegagalan lain (5xx, timeout, 400) **tidak** menghabiskan
-  kunci: itu tetap ditangani retry/fallback Agent Loop seperti sebelumnya. Bila semua kunci habis,
-  pesan error menyebut kunci ke berapa yang gagal (`key 2/3`) sehingga penyebabnya jelas di log.
-  Kunci tambahan disimpan terenkripsi (`SecretCipher`) seperti kunci utama.
-* **Unified search** (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
+Pengaturan → Model & Provider berisi **daftar provider**; tiap baris punya base URL, model, dan key
+pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
+
+* **Rotasi kunci di dalam satu provider.** Isi beberapa kunci (satu per baris). Kunci awalnya dirotasi
+  (round-robin) supaya beban tidak selalu jatuh ke kunci pertama; bila sebuah kunci gagal karena hal
+  yang memang soal kunci — `401`/`402`/`403` (ditolak/tagihan) atau `429` (rate limit/quota) —
+  percobaan berikutnya otomatis memakai kunci lain. Kegagalan lain (5xx, timeout, 400) **tidak**
+  menghabiskan kunci: itu tetap ditangani retry/fallback Agent Loop seperti sebelumnya. Bila semua
+  kunci habis, pesan error menyebut kunci ke berapa yang gagal (`key 2/3`) sehingga penyebabnya jelas
+  di log.
+* **Failover antar provider.** Satu provider ditandai **Aktif** dan itu yang menjawab. Setelah semua
+  kunci provider aktif habis, percobaan berikutnya pindah ke provider lain yang **usable** (aktif di
+  switch, punya base URL, punya minimal satu kunci) sesuai **urutan** di daftar — tombol ↑/↓ mengatur
+  urutan itu. Provider tanpa kunci sengaja dilewati, karena router hanya akan membuang satu percobaan
+  untuk request yang tidak mungkin berhasil.
+* **Tambah/edit/hapus** lewat dialog: ada preset gateway (OpenAI, OpenRouter, Groq, Gemini, DeepSeek)
+  supaya tidak perlu mengetik empat field, tombol **Uji** per provider untuk cek latency/AVAILABLE
+  tanpa mengubah pilihan aktif, dan switch untuk menonaktifkan provider tanpa menghapus kuncinya.
+* Kunci disimpan terenkripsi (`SecretCipher`), satu blob per provider. Install lama yang masih
+  single-provider otomatis dibuatkan satu baris pertama dari konfigurasinya saat aplikasi dibuka,
+  jadi tidak ada yang perlu diisi ulang.
+* Vision (analisis media) masih punya konfigurasi terpisah di bagian **Vision** — belum ikut daftar ini.
+
+### Unified search (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
   chat, memori jangka panjang, task terjadwal & sub-agent, file workspace, dan daftar tool. Ranking
   leksikal yang bisa dijelaskan: frasa yang cocok di judul > frasa di isi > kecocokan kata per kata,
   seri diputus oleh yang terbaru; query satu huruf sengaja tidak menghasilkan apa-apa. Tujuannya
@@ -504,7 +523,8 @@ Sudah selesai: kontrol akses kontak, command chat, approval destruktif, memori j
 compact, subagent latar belakang, council & refleksi (termasuk refleksi otomatis terjadwal),
 scheduler + WorkManager, web tools, media WhatsApp masuk/keluar, terminal bawaan, browser
 automation + serah terima captcha/2FA, keys pool, unified search, skill markdown, MCP connector,
-`read_file` bertahap, probe model + metrik, build `optimized` (R8), dan perombakan UI
+`read_file` bertahap, probe model + metrik, build `optimized` (R8), multi-provider dengan failover,
+dan perombakan UI
 (sistem token warna/tipografi/bentuk, navigasi adaptif phone↔tablet, serta perbaikan bug
 frontend — alasan desainnya ada di `DOC/desain-ui.md`).
 
