@@ -104,8 +104,11 @@ class MultiProviderTest {
     existing = existing + ProviderDirectory.newProviderId(existing)
     existing = existing + ProviderDirectory.newProviderId(existing)
     assertEquals(listOf("provider-1", "provider-2"), existing)
-    // Even with a gap in the numbering, ids stay unique.
-    assertEquals("provider-3", ProviderDirectory.newProviderId(listOf("provider-1", "provider-3")))
+    // A gap in the numbering is stepped over instead of reused, so an id never points at two rows.
+    val withGap = listOf("provider-1", "provider-3")
+    val next = ProviderDirectory.newProviderId(withGap)
+    assertEquals("provider-4", next)
+    assertFalse(withGap.contains(next))
   }
 
   @Test
@@ -148,9 +151,10 @@ class MultiProviderTest {
 
   @Test
   fun `a provider with no label still renders a name`() {
-    val unnamed = provider("a").copy(label = "   ")
-    assertEquals("Provider a", unnamed.displayLabel)
-    // Without a label either, the base URL still names the row better than its raw id does.
-    assertEquals("https://x/v1", provider("a").copy(label = "", baseUrl = "https://x/v1").displayLabel)
+    assertEquals("Provider a", provider("a").displayLabel)
+    // A whitespace-only label falls through to the base URL, which names the row better than its id.
+    assertEquals("https://api.example.com/v1", provider("a").copy(label = "   ").displayLabel)
+    // With neither a label nor a base URL, the id is still something rather than a blank row.
+    assertEquals("a", provider("a").copy(label = "", baseUrl = "   ").displayLabel)
   }
 }
