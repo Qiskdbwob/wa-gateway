@@ -504,7 +504,9 @@ Sudah selesai: kontrol akses kontak, command chat, approval destruktif, memori j
 compact, subagent latar belakang, council & refleksi (termasuk refleksi otomatis terjadwal),
 scheduler + WorkManager, web tools, media WhatsApp masuk/keluar, terminal bawaan, browser
 automation + serah terima captcha/2FA, keys pool, unified search, skill markdown, MCP connector,
-`read_file` bertahap, probe model + metrik, dan build `optimized` (R8).
+`read_file` bertahap, probe model + metrik, build `optimized` (R8), dan perombakan UI
+(sistem token warna/tipografi/bentuk, navigasi adaptif phone↔tablet, serta perbaikan bug
+frontend — alasan desainnya ada di `DOC/desain-ui.md`).
 
 Urutan yang disarankan berikutnya (alasan & estimasi biaya ada di `DOC/riset-optimasi.md`):
 uji APK `optimized` di HP → aktifkan R8 untuk `release` → sandbox Linux penuh (proot + Alpine
