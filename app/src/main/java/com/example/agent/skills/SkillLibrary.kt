@@ -40,6 +40,20 @@ class SkillLibrary(private val workspace: Workspace) {
     /** `workspace/skills` — created on demand. */
     fun directory(): File = File(workspace.root, SKILLS_DIRECTORY)
 
+    /** Seeds foundational default skills if they are not yet present in the workspace. */
+    fun seedDefaults() {
+        try {
+            val dir = directory()
+            if (!dir.exists()) dir.mkdirs()
+            val target = File(dir, "personal-understanding.md")
+            if (!target.exists()) {
+                target.writeText(DEFAULT_PERSONAL_UNDERSTANDING_SKILL.trimIndent())
+            }
+        } catch (_: Exception) {
+            // Best effort file creation
+        }
+    }
+
     /** All skills, newest first, then by name; malformed files are skipped instead of throwing. */
     fun load(): List<Skill> {
         val files = directory().listFiles()?.filter { it.isFile && it.extension.lowercase() == "md" }
@@ -158,5 +172,49 @@ class SkillLibrary(private val workspace: Workspace) {
         const val MAX_BODY_CHARS = 4_000
         const val MAX_DESCRIPTION_CHARS = 200
         const val MAX_FILE_NAME_CHARS = 60
+
+        val DEFAULT_PERSONAL_UNDERSTANDING_SKILL = """
+            ---
+            name: Personal Understanding
+            description: Panduan memahami konteks, preferensi, pola, dan batasan user secara revisibel dan kontekstual.
+            ---
+            # Personal Understanding Skill
+
+            ## Purpose
+            This skill defines how a personal agent should develop and maintain an understanding of its user, tasks, environment, preferences, and previous experiences.
+
+            The agent must distinguish between:
+            - information it has received;
+            - patterns it has observed;
+            - assumptions it has made;
+            - conclusions it has derived;
+            - things it has actually verified.
+
+            Note: Information classification (FACT, PREFERENCE, PATTERN, INFERENCE, UNCERTAINTY) is strictly for the agent's internal cognitive reasoning and scratchpad. Never output raw classification labels into user chat.
+
+            ## Core Principle
+            Memory is not the same as understanding.
+            Knowing "The user prefers X" is information.
+            Understanding requires context: "The user prefers X in situations A and B, but prefers Y when condition C occurs."
+            Do not reduce the user to isolated facts. Model relationships and conditions.
+
+            ## Information Classification (Internal Thinking)
+            - FACT: Explicitly provided or reliably verified.
+            - PREFERENCE: Stated preference.
+            - PATTERN: Repeated observed behavior across interactions.
+            - INFERENCE: Conclusion derived from available information. Treat as hypothesis.
+            - UNCERTAINTY: Contradictory, incomplete, or outdated information. Do not convert uncertainty to fact.
+
+            ## Context Matters
+            Simple questions -> concise, direct answer.
+            Technical / coding tasks -> structured detail.
+            Research / analysis -> deeper exploration.
+            Casual conversation -> natural, warm conversation.
+
+            ## Learn From Corrections & Failures
+            - User corrections are high-value evidence. Update the model; do not merely patch the current turn.
+            - Failures: determine expected vs actual, what assumption was wrong, and save the lesson via `reflect` or `save_skill`.
+            - Keep the user model revisable: when new evidence conflicts, update the hypothesis rather than forcing behavior to fit outdated assumptions.
+        """.trimIndent()
     }
 }

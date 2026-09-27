@@ -309,7 +309,7 @@ class AgentLoop(
                         _state.value = AgentState.FALLBACK
                         val prevTarget = configuredTargets[targetIndex - 1]
                         log("FALLBACK_STARTED", "Target '${prevTarget.id}' failed. Switching to fallback target '${target.id}' (${target.provider.name})")
-                        emitProgress("⇄ Model utama tidak merespons, beralih ke model cadangan (${target.modelId ?: agent.modelId})...")
+                        emitProgress("> ⇄ Model utama tidak merespons, beralih ke model cadangan (${target.modelId ?: agent.modelId})...")
                         log("FALLBACK_MODEL_SELECTED", "target=${target.id}, provider=${target.provider.name}, model=${target.modelId ?: agent.modelId}, priority=${target.priority}")
                     }
 
@@ -324,7 +324,7 @@ class AgentLoop(
                                 "RETRY_STARTED",
                                 "attempt=$modelAttempt/${effectiveRetryPolicy.maxAttemptsPerModel}, target=${target.id}, provider=${target.provider.name}, model=${target.modelId ?: agent.modelId}"
                             )
-                            emitProgress("↻ Mencoba ulang (${modelAttempt}/${effectiveRetryPolicy.maxAttemptsPerModel})...")
+                            emitProgress("> ↻ Mencoba ulang (${modelAttempt}/${effectiveRetryPolicy.maxAttemptsPerModel})...")
                         }
 
                         val requestModel = target.modelId?.ifBlank { null } ?: agent.modelId
@@ -388,7 +388,7 @@ class AgentLoop(
                                 for (call in toolCalls) {
                                     _state.value = AgentState.WAITING_TOOL
                                     _currentActivity.value = "Menjalankan tool ${call.name}..."
-                                    emitProgress("🔧 Menggunakan tool: ${call.name}...")
+                                    emitProgress("> 🔧 Menggunakan tool: ${call.name}...")
 
                                     val tool = toolRegistry?.get(call.name)
                                     val toolStart = System.currentTimeMillis()
@@ -423,13 +423,13 @@ class AgentLoop(
                                     if (toolResult.error?.startsWith("PENDING_APPROVAL:") == true) {
                                         // Destructive call parked for human approval — keep the
                                         // turn alive so the model relays the request to the user.
-                                        emitProgress("🔐 Menunggu persetujuan untuk ${call.name}...")
+                                        emitProgress("> 🔐 Menunggu persetujuan untuk ${call.name}...")
                                     } else {
                                         emitProgress(
                                             if (toolResult.success) {
-                                                "🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
+                                                "> 🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
                                             } else {
-                                                "🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
+                                                "> 🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
                                             }
                                         )
                                     }
@@ -494,7 +494,7 @@ class AgentLoop(
                                     _state.value = AgentState.RETRYING
                                     val backoff = classification.retryAfterMs ?: (effectiveRetryPolicy.initialBackoffMs * modelAttempt)
                                     log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms, phase=tool-follow-up")
-                                    emitProgress("↻ Terjadi kendala saat memakai tool, mencoba ulang...")
+                                    emitProgress("> ↻ Terjadi kendala saat memakai tool, mencoba ulang...")
                                     delay(backoff)
                                     continue // retry on same model
                                 } else if (classification.canFallback) {
@@ -530,7 +530,7 @@ class AgentLoop(
                                     _state.value = AgentState.RETRYING
                                     val backoff = effectiveRetryPolicy.initialBackoffMs * modelAttempt
                                     log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms, reason=EMPTY_RESPONSE")
-                                    emitProgress("↻ Jawaban kosong, mencoba ulang...")
+                                    emitProgress("> ↻ Jawaban kosong, mencoba ulang...")
                                     delay(backoff)
                                     continue // retry on same model
                                 } else {
@@ -601,7 +601,7 @@ class AgentLoop(
                                 advertiseTools = false
                                 _state.value = AgentState.RETRYING
                                 log("TOOL_SCHEMA_REJECTED", "target=${target.id}, provider=${target.provider.name}. Endpoint menolak skema tool; permintaan diulang tanpa tool.")
-                                emitProgress("Model ini belum mendukung tool, mengulang tanpa tool...")
+                                emitProgress("> Model ini belum mendukung tool, mengulang tanpa tool...")
                                 continue
                             }
 
@@ -620,7 +620,7 @@ class AgentLoop(
                                 _state.value = AgentState.RETRYING
                                 val backoff = classification.retryAfterMs ?: (effectiveRetryPolicy.initialBackoffMs * modelAttempt)
                                 log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms")
-                                emitProgress("↻ Terjadi kendala (${classification.kind.name.lowercase()}), mencoba ulang...")
+                                emitProgress("> ↻ Terjadi kendala (${classification.kind.name.lowercase()}), mencoba ulang...")
                                 delay(backoff)
                                 continue // retry on same model
                             } else {

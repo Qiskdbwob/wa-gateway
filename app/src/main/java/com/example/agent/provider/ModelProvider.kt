@@ -280,7 +280,10 @@ class OpenAiCompatibleProvider(
         val array = JSONArray()
         for (tool in tools) {
             val parameters = try {
-                JSONObject(tool.parametersJson)
+                val parsed = JSONObject(tool.parametersJson)
+                if (!parsed.has("type")) parsed.put("type", "object")
+                if (!parsed.has("properties")) parsed.put("properties", JSONObject())
+                parsed
             } catch (_: Exception) {
                 JSONObject().put("type", "object").put("properties", JSONObject())
             }

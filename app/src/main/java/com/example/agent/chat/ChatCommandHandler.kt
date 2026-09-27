@@ -49,7 +49,13 @@ class ChatCommandHandler(
         { _, _ -> "Tool terminal tidak aktif. Aktifkan di Pengaturan → Terminal." },
     /** Opens a URL for `/browser`. Implemented by the bridge. */
     private val openBrowserUrl: suspend (url: String, conversationId: String) -> String =
-        { _, _ -> "Browser automation tidak aktif. Aktifkan di Pengaturan → Browser." }
+        { _, _ -> "Browser automation tidak aktif. Aktifkan di Pengaturan → Browser." },
+    /** Returns summary of MCP servers & tools for `/mcp` command. */
+    private val getMcpSummary: suspend () -> String = { "Fitur MCP tidak aktif." },
+    /** Refreshes MCP servers from chat. */
+    private val refreshMcpServers: suspend () -> String = { "Fitur MCP tidak aktif." },
+    /** Short summary for /status command. */
+    private val getMcpShortStatus: suspend () -> String = { "" }
 ) {
 
     sealed class Result {
@@ -113,6 +119,8 @@ class ChatCommandHandler(
                     Result.Handled(openBrowserUrl(url, conversationId))
                 }
             }
+
+            "mcp" -> handleMcp(parts.drop(1))
 
             "status" -> Result.Handled(statusText(contactId))
 
@@ -276,6 +284,19 @@ class ChatCommandHandler(
         }
     }
 
+    private suspend fun handleMcp(args: List<String>): Result {
+        val sub = args.firstOrNull()?.lowercase()
+        return when (sub) {
+            "refresh", "sync", "reload" -> {
+                val report = refreshMcpServers()
+                Result.Handled("🔄 $report")
+            }
+            else -> {
+                Result.Handled(getMcpSummary())
+            }
+        }
+    }
+
     private suspend fun statusText(contactId: String): String {
         val state = agentLoop.state.value
         val whitelistOn = isWhitelistMode()
@@ -284,6 +305,7 @@ class ChatCommandHandler(
         val memories = memory.countByType(MemoryItemEntity.TYPE_KNOWLEDGE)
         val episodic = memory.countByType(MemoryItemEntity.TYPE_EPISODIC)
         val scheduled = scheduledTaskDao.getAll().count { it.enabled }
+        val mcpShort = getMcpShortStatus()
         return buildString {
             appendLine("📊 Status Agent")
             appendLine("• State: $state")
@@ -292,6 +314,9 @@ class ChatCommandHandler(
             appendLine("• Approval pending: $pendingApprovals")
             appendLine("• Memori: $memories fakta, $episodic episodik")
             appendLine("• Tugas terjadwal aktif: $scheduled")
+            if (mcpShort.isNotBlank()) {
+                appendLine("• MCP: $mcpShort")
+            }
         }.trimEnd()
     }
 
@@ -310,6 +335,7 @@ class ChatCommandHandler(
         /browser <url> — buka halaman di browser otomatis agent
         /remember <teks> — simpan fakta ke memori
         /learning — review kandidat pembelajaran
+        /mcp [refresh] — status & daftar server/tool MCP
         /approve <id> — setujui tool destruktif
         /reject <id> — tolak tool destruktif
     """.trimIndent()

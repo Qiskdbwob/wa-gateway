@@ -94,7 +94,7 @@ import java.io.File
 /** Metadata key holding the WhatsApp message ID that should be edited with the answer. */
 const val EDIT_TARGET_KEY = "whatsappEditTarget"
 
-private const val THINKING_PLACEHOLDER = "⏳ Sedang berpikir..."
+private const val THINKING_PLACEHOLDER = "> ⏳ Sedang berpikir..."
 
 /** WhatsApp drops the typing state after a few seconds, so refresh it while working. */
 private const val TYPING_REFRESH_MS = 8_000L
@@ -906,7 +906,38 @@ class WhatsAppAgentBridge private constructor(
         resolveProvider = { resolveProviderPair() },
         maxContextMessages = { _maxContextMessages.value },
         runTerminalCommand = { command, conversationId -> runTerminalFromChat(command, conversationId) },
-        openBrowserUrl = { url, conversationId -> openBrowserFromChat(url, conversationId) }
+        openBrowserUrl = { url, conversationId -> openBrowserFromChat(url, conversationId) },
+        getMcpSummary = {
+            val servers = mcpManager.servers.value
+            val statuses = mcpManager.statuses.value
+            val toolNames = mcpManager.toolNames()
+            if (servers.isEmpty()) {
+                "🔌 Belum ada server MCP yang dikonfigurasi.\nTambahkan server melalui tab Pengaturan di aplikasi Android."
+            } else {
+                buildString {
+                    appendLine("🔌 Server MCP (${servers.size}):")
+                    for (server in servers) {
+                        val status = statuses[server.id] ?: if (server.enabled) "aktif" else "nonaktif"
+                        val stateMark = if (server.enabled) "🟢" else "⚪"
+                        appendLine("$stateMark ${server.name}: $status")
+                    }
+                    appendLine("\nTotal tool MCP terdaftar: ${toolNames.size}")
+                    if (toolNames.isNotEmpty()) {
+                        appendLine("Tool: " + toolNames.joinToString(", "))
+                    }
+                    append("\nKetik /mcp refresh untuk memeriksa ulang.")
+                }
+            }
+        },
+        refreshMcpServers = {
+            refreshMcpTools()
+        },
+        getMcpShortStatus = {
+            val servers = mcpManager.servers.value
+            val active = servers.count { it.enabled }
+            val tools = mcpManager.toolNames().size
+            if (servers.isEmpty()) "" else "$active/${servers.size} server aktif ($tools tool)"
+        }
     )
 
     /**
@@ -1029,7 +1060,8 @@ class WhatsAppAgentBridge private constructor(
                     // Only edit a bubble that actually exists, and never let a failed edit
                     // of a progress note break the reply itself.
                     if (!ackId.isNullOrBlank()) {
-                        scope.launch { gatewayManager.editText(conversationId, ackId, progress) }
+                        val formattedProgress = if (progress.startsWith(">")) progress else "> $progress"
+                        scope.launch { gatewayManager.editText(conversationId, ackId, formattedProgress) }
                     }
                 },
                 systemPromptOverride = effectivePrompt
@@ -1039,7 +1071,7 @@ class WhatsAppAgentBridge private constructor(
                 gatewayManager.editText(
                     conversationId,
                     ackId,
-                    "⚠️ ${result.exceptionOrNull()?.message ?: "Agent tidak dapat memproses pesan ini."}"
+                    "> ⚠️ ${result.exceptionOrNull()?.message ?: "Agent tidak dapat memproses pesan ini."}"
                 )
             }
 
@@ -1102,7 +1134,10 @@ class WhatsAppAgentBridge private constructor(
 
     /** Reloads the skill list for the UI (the tools read the folder directly on every call). */
     fun refreshSkills() {
-        scope.launch { _skills.value = skillLibrary.load() }
+        scope.launch {
+            skillLibrary.seedDefaults()
+            _skills.value = skillLibrary.load()
+        }
     }
 
     /**
