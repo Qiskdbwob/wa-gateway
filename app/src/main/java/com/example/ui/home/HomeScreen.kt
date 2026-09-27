@@ -1,7 +1,6 @@
 package com.example.ui.home
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,584 +14,449 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Hub
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.agent.loop.AgentState
+import com.example.agent.storage.entity.ApprovalRequestEntity
 import com.example.ui.components.AgentStatusBadge
-import com.example.ui.components.CompactCard
 import com.example.ui.components.ConnectionStatusBadge
+import com.example.ui.components.ConsoleCard
+import com.example.ui.components.ScreenHeader
 import com.example.ui.components.SectionHeader
-import com.example.ui.theme.AgentEmerald
-import com.example.ui.theme.AgentWhatsAppGreen
+import com.example.ui.components.TelemetryLine
+import com.example.ui.navigation.SettingsSection
+import com.example.ui.theme.Sizes
+import com.example.ui.theme.Spacing
+import com.example.ui.theme.status
 import com.example.wagateway.WaGatewayViewModel
 
+/**
+ * Beranda answers three questions in order, which is the whole navigation model of the app:
+ *
+ *  1. Does anything need me right now? (an approval the agent is blocked on, a channel that
+ *     is not linked, a model that has no key) — shown first, with the action inline.
+ *  2. What is the agent doing? — one card with its state and live telemetry.
+ *  3. What did it just do, and where do I go to talk to it?
+ *
+ * Every card states its destination in words ("Ubah model", "Tautkan perangkat") instead of
+ * being a mystery tap target, and nothing here is decorative.
+ */
 @Composable
 fun HomeScreen(
-    viewModel: WaGatewayViewModel,
-    onNavigateToChat: () -> Unit,
-    onNavigateToGateway: () -> Unit,
-    onNavigateToSettings: () -> Unit,
-    onNavigateToTasks: () -> Unit,
-    modifier: Modifier = Modifier
+  viewModel: WaGatewayViewModel,
+  onNavigateToChat: () -> Unit,
+  onNavigateToGateway: () -> Unit,
+  onNavigateToSettings: (SettingsSection) -> Unit,
+  onNavigateToTasks: () -> Unit,
+  modifier: Modifier = Modifier,
 ) {
-    val agentState by viewModel.agentState.collectAsState()
-    val isAutoReply by viewModel.isAgentAutoReply.collectAsState()
-    val isConnected by viewModel.isConnected.collectAsState()
-    val connectionStatus by viewModel.connectionStatus.collectAsState()
-    val modelId by viewModel.agentModelId.collectAsState()
-    val apiKey by viewModel.agentApiKey.collectAsState()
-    val useEchoFallback by viewModel.useEchoFallback.collectAsState()
-    val agentLogs by viewModel.agentLogs.collectAsState()
-    val sessions by viewModel.sessions.collectAsState()
-    val whitelistMode by viewModel.whitelistMode.collectAsState()
-    val pendingApprovals by viewModel.pendingApprovals.collectAsState()
-    val subAgentTasks by viewModel.subAgentTasks.collectAsState()
-    val scheduledTasks by viewModel.scheduledTasks.collectAsState()
+  val agentState by viewModel.agentState.collectAsState()
+  val isAutoReply by viewModel.isAgentAutoReply.collectAsState()
+  val isConnected by viewModel.isConnected.collectAsState()
+  val connectionStatus by viewModel.connectionStatus.collectAsState()
+  val modelId by viewModel.agentModelId.collectAsState()
+  val apiKey by viewModel.agentApiKey.collectAsState()
+  val useEchoFallback by viewModel.useEchoFallback.collectAsState()
+  val agentLogs by viewModel.agentLogs.collectAsState()
+  val sessions by viewModel.sessions.collectAsState()
+  val whitelistMode by viewModel.whitelistMode.collectAsState()
+  val pendingApprovals by viewModel.pendingApprovals.collectAsState()
+  val subAgentTasks by viewModel.subAgentTasks.collectAsState()
+  val scheduledTasks by viewModel.scheduledTasks.collectAsState()
 
-    val scrollState = rememberScrollState()
-
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Top Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "Personal AI Agent",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "Asisten cerdas via WhatsApp & Chat",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-                    .clickable { onNavigateToChat() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.SmartToy,
-                    contentDescription = "Agent",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-        }
-
-        // 1. Agent Status Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("home_agent_status_card"),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-            border = CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                )
-            )
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(AgentEmerald.copy(alpha = 0.15f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Psychology,
-                                contentDescription = null,
-                                tint = AgentEmerald,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Agent Core",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = if (isAutoReply) "Auto-Reply Aktif" else "Standby (Manual Chat)",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    AgentStatusBadge(state = agentState)
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Auto-Reply Pesan WhatsApp",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = "Membalas chat WhatsApp otomatis dengan AI",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Switch(
-                        checked = isAutoReply,
-                        onCheckedChange = { viewModel.toggleAgentAutoReply() },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = AgentEmerald
-                        )
-                    )
-                }
-            }
-        }
-
-        // 2. WhatsApp Gateway Quick Tile
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNavigateToGateway() }
-                .testTag("home_whatsapp_card"),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp),
-            border = CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(
-                    if (isConnected) AgentWhatsAppGreen.copy(alpha = 0.4f)
-                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                )
-            )
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(AgentWhatsAppGreen.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Phone,
-                            contentDescription = null,
-                            tint = AgentWhatsAppGreen,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "WhatsApp Gateway",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = if (isConnected) "Akun terhubung • Siap menerima pesan" else "Belum terhubung • Ketuk untuk pairing",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (isConnected) AgentWhatsAppGreen else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    ConnectionStatusBadge(
-                        isConnected = isConnected,
-                        statusText = connectionStatus
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = "Buka Gateway",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-        }
-
-        // 3. Active Model Summary Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNavigateToSettings() }
-                .testTag("home_model_card"),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp),
-            border = CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                )
-            )
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "Model AI",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = if (apiKey.isNotBlank()) modelId.ifBlank { "gpt-4o-mini" } else if (useEchoFallback) "Echo Test Fallback" else "OpenAI ($modelId)",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = if (apiKey.isNotBlank()) "Provider: OpenAI Compatible API" else "Tanpa API Key (Echo aktif)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = "Ubah Model",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-
-        // 3b. Security & approval snapshot (Priority 1 + 3)
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNavigateToSettings() }
-                .testTag("home_security_card"),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                )
-            )
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Text(
-                    text = "Keamanan Agent",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = if (whitelistMode) {
-                        "Whitelist AKTIF — hanya nomor terdaftar yang dilayani"
-                    } else {
-                        "Whitelist nonaktif — semua nomor dilayani kecuali yang diblokir"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                val activeSubAgents = subAgentTasks.count {
-                    it.status == com.example.agent.storage.entity.AgentTaskEntity.STATUS_RUNNING ||
-                        it.status == com.example.agent.storage.entity.AgentTaskEntity.STATUS_QUEUED
-                }
-                if (activeSubAgents > 0 || scheduledTasks.isNotEmpty() || pendingApprovals.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = buildString {
-                            append("Sub-agent aktif: $activeSubAgents")
-                            append(" • Task terjadwal: ${scheduledTasks.size}")
-                            append(" • Menunggu approval: ${pendingApprovals.size}")
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (pendingApprovals.isNotEmpty()) {
-                            Color(0xFFF59E0B)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
-            }
-        }
-
-        // 4. Current Task
-        SectionHeader(
-            title = "Task Aktif",
-            icon = Icons.Outlined.CheckCircle,
-            actionLabel = "Lihat Semua",
-            onActionClick = onNavigateToTasks
-        )
-
-        val isTaskActive = agentState == AgentState.THINKING ||
-                agentState == AgentState.CALLING_TOOL ||
-                agentState == AgentState.WAITING_APPROVAL
-
-        if (isTaskActive) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                ),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                    )
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFF59E0B))
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = when (agentState) {
-                                AgentState.THINKING -> "Agent sedang menganalisis pesan..."
-                                AgentState.CALLING_TOOL -> "Agent sedang menjalankan tool eksternal..."
-                                AgentState.WAITING_APPROVAL -> "Menunggu konfirmasi aksi dari pengguna..."
-                                else -> "Agent sedang bekerja..."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "Model: $modelId",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        } else {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                    )
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(AgentEmerald)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "Belum ada task aktif",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = "Agent siap menerima pesan chat atau input WhatsApp.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-
-        // 5. Recent Activity
-        SectionHeader(
-            title = "Aktivitas Terkini",
-            icon = Icons.Outlined.History,
-            actionLabel = "Mulai Chat",
-            onActionClick = onNavigateToChat
-        )
-
-        val recentLogs = agentLogs.take(3)
-        if (recentLogs.isEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                    )
-                )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp)
-                ) {
-                    Text(
-                        text = "Belum ada aktivitas tercatat",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "Pesan masuk dan respon otomatis akan tampil di sini.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                recentLogs.forEach { logEntry ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        border = CardDefaults.outlinedCardBorder().copy(
-                            brush = androidx.compose.ui.graphics.SolidColor(
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
-                            )
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = logEntry,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
+  val activeSubAgents =
+    subAgentTasks.count {
+      it.status == com.example.agent.storage.entity.AgentTaskEntity.STATUS_RUNNING ||
+        it.status == com.example.agent.storage.entity.AgentTaskEntity.STATUS_QUEUED
     }
+  val modelConfigured = apiKey.isNotBlank() || useEchoFallback
+
+  Column(
+    modifier =
+      modifier
+        .fillMaxSize()
+        .verticalScroll(rememberScrollState())
+        .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+    verticalArrangement = Arrangement.spacedBy(Spacing.md),
+  ) {
+    ScreenHeader(
+      title = "Beranda",
+      subtitle = "Status agent dan aksi cepat",
+      trailing = { AgentStatusBadge(state = agentState) },
+    )
+
+    // ------------------------------------------------------------------ 1. needs you now
+    if (pendingApprovals.isNotEmpty()) {
+      ApprovalQueueCard(
+        requests = pendingApprovals,
+        onApprove = { viewModel.approveRequest(it) },
+        onReject = { viewModel.rejectRequest(it) },
+        onOpenSettings = { onNavigateToSettings(SettingsSection.ACCESS) },
+      )
+    }
+
+    if (!isConnected) {
+      ConsoleCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          ChannelGlyph()
+          Spacer(modifier = Modifier.width(Spacing.md))
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "WhatsApp belum tertaut",
+              style = MaterialTheme.typography.titleSmall,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              text = "Agent belum bisa menerima atau membalas pesan WhatsApp.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+        Spacer(modifier = Modifier.height(Spacing.md))
+        Button(
+          onClick = onNavigateToGateway,
+          shape = MaterialTheme.shapes.small,
+          modifier = Modifier.testTag("home_link_device_button"),
+        ) {
+          Text("Tautkan perangkat")
+        }
+      }
+    }
+
+    if (!modelConfigured) {
+      ConsoleCard(accent = MaterialTheme.status.warning) {
+        Text(
+          text = "Model belum dikonfigurasi",
+          style = MaterialTheme.typography.titleSmall,
+          fontWeight = FontWeight.SemiBold,
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(modifier = Modifier.height(Spacing.xs))
+        Text(
+          text = "Isi API key atau aktifkan Echo fallback supaya agent bisa menjawab.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(Spacing.md))
+        Button(
+          onClick = { onNavigateToSettings(SettingsSection.MODEL) },
+          shape = MaterialTheme.shapes.small,
+          modifier = Modifier.testTag("home_configure_model_button"),
+        ) {
+          Text("Atur model")
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------ 2. the agent
+    ConsoleCard(modifier = Modifier.testTag("home_agent_status_card")) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+          modifier =
+            Modifier
+              .size(36.dp)
+              .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Psychology,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.size(Sizes.iconMd),
+          )
+        }
+        Spacer(modifier = Modifier.width(Spacing.md))
+        Column(modifier = Modifier.weight(1f)) {
+          Text(text = "Agent", style = MaterialTheme.typography.titleMedium)
+          Text(
+            text = when (agentState) {
+              AgentState.THINKING, AgentState.CALLING_TOOL, AgentState.WAITING_TOOL ->
+                "Sedang mengerjakan permintaan terakhir"
+              AgentState.WAITING_APPROVAL -> "Berhenti: menunggu konfirmasi Anda"
+              AgentState.FAILED -> "Percobaan terakhir gagal"
+              else -> if (isAutoReply) "Siap membalas pesan masuk" else "Siaga — balasan otomatis mati"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+      }
+
+      Spacer(modifier = Modifier.height(Spacing.md))
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Spacer(modifier = Modifier.height(Spacing.md))
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "Balas otomatis pesan WhatsApp",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+          )
+          Text(
+            text = "Agent menjawab pesan WhatsApp tanpa Anda membuka aplikasi",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        Switch(
+          checked = isAutoReply,
+          onCheckedChange = { viewModel.toggleAgentAutoReply() },
+          colors =
+            SwitchDefaults.colors(
+              checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+              checkedTrackColor = MaterialTheme.colorScheme.primary,
+            ),
+          modifier = Modifier.testTag("home_auto_reply_switch"),
+        )
+      }
+
+      Spacer(modifier = Modifier.height(Spacing.md))
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Spacer(modifier = Modifier.height(Spacing.md))
+
+      TelemetryLine(label = "Model", value = modelId.ifBlank { "gpt-4o-mini" })
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      TelemetryLine(
+        label = "Provider",
+        value =
+          when {
+            apiKey.isNotBlank() -> "openai-compatible"
+            useEchoFallback -> "echo-fallback"
+            else -> "belum diatur"
+          },
+        tone = if (modelConfigured) null else MaterialTheme.status.warning,
+      )
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      TelemetryLine(label = "Sesi tersimpan", value = sessions.size.toString())
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      TelemetryLine(label = "Sub-agent aktif", value = activeSubAgents.toString())
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      TelemetryLine(label = "Task terjadwal", value = scheduledTasks.size.toString())
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      TelemetryLine(
+        label = "Antrean konfirmasi",
+        value = pendingApprovals.size.toString(),
+        tone = if (pendingApprovals.isEmpty()) null else MaterialTheme.status.warning,
+      )
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      TelemetryLine(
+        label = "Whitelist nomor",
+        value = if (whitelistMode) "aktif" else "nonaktif",
+      )
+
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      Row {
+        TextButton(onClick = { onNavigateToSettings(SettingsSection.MODEL) }) {
+          Text("Ubah model", style = MaterialTheme.typography.labelMedium)
+        }
+        TextButton(onClick = { onNavigateToSettings(SettingsSection.ACCESS) }) {
+          Text("Keamanan & akses", style = MaterialTheme.typography.labelMedium)
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------ 3. the channel
+    ConsoleCard(
+      onClick = onNavigateToGateway,
+      modifier = Modifier.testTag("home_whatsapp_card"),
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        ChannelGlyph()
+        Spacer(modifier = Modifier.width(Spacing.md))
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "WhatsApp Gateway",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+          )
+          Text(
+            text =
+              if (isConnected) {
+                "Akun tertaut — pesan masuk diproses agent"
+              } else {
+                "Belum tertaut — ketuk untuk menautkan perangkat"
+              },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        ConnectionStatusBadge(isConnected = isConnected, statusText = connectionStatus)
+        Spacer(modifier = Modifier.width(Spacing.xs))
+        Icon(
+          imageVector = Icons.Filled.ChevronRight,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.size(Sizes.iconMd),
+        )
+      }
+    }
+
+    // ------------------------------------------------------------------ 4. what just happened
+    SectionHeader(
+      title = "Aktivitas terakhir",
+      icon = Icons.Outlined.History,
+      actionLabel = "Buka chat",
+      onActionClick = onNavigateToChat,
+    )
+
+    val recentLogs = agentLogs.take(3)
+    ConsoleCard {
+      if (recentLogs.isEmpty()) {
+        Text(
+          text = "Belum ada aktivitas",
+          style = MaterialTheme.typography.bodyMedium,
+          fontWeight = FontWeight.Medium,
+        )
+        Spacer(modifier = Modifier.height(Spacing.xs))
+        Text(
+          text = "Pesan masuk dan balasan agent akan tampil di sini.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      } else {
+        recentLogs.forEachIndexed { index, entry ->
+          if (index > 0) Spacer(modifier = Modifier.height(Spacing.sm))
+          Text(
+            text = entry,
+            style = MaterialTheme.telemetry.block,
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+        }
+        Spacer(modifier = Modifier.height(Spacing.md))
+        TextButton(onClick = onNavigateToTasks) {
+          Text("Lihat riwayat lengkap", style = MaterialTheme.typography.labelMedium)
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(Spacing.sm))
+  }
 }
+
+/**
+ * The one card that always sits at the top when it exists: a destructive tool call is parked
+ * and the agent cannot continue until a human answers. It used to be a passive counter that
+ * dropped the user at the top of the 1200-line settings page.
+ */
+@Composable
+private fun ApprovalQueueCard(
+  requests: List<ApprovalRequestEntity>,
+  onApprove: (String) -> Unit,
+  onReject: (String) -> Unit,
+  onOpenSettings: () -> Unit,
+) {
+  ConsoleCard(
+    accent = MaterialTheme.status.warning,
+    modifier = Modifier.testTag("home_approval_card"),
+  ) {
+    Text(
+      text = if (requests.size == 1) "1 tool menunggu persetujuan" else "${requests.size} tool menunggu persetujuan",
+      style = MaterialTheme.typography.titleSmall,
+      fontWeight = FontWeight.Bold,
+    )
+    Spacer(modifier = Modifier.height(Spacing.xs))
+    Text(
+      text = "Agent berhenti di langkah ini sampai Anda memutuskan.",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    requests.take(3).forEach { request ->
+      Spacer(modifier = Modifier.height(Spacing.md))
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Spacer(modifier = Modifier.height(Spacing.md))
+      Text(
+        text = request.toolName,
+        style = MaterialTheme.telemetry.value,
+        color = MaterialTheme.colorScheme.onSurface,
+      )
+      if (request.arguments.isNotBlank()) {
+        Spacer(modifier = Modifier.height(Spacing.xs))
+        Text(
+          text = request.arguments,
+          style = MaterialTheme.telemetry.label,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 3,
+        )
+      }
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+        Button(onClick = { onApprove(request.id) }, shape = MaterialTheme.shapes.small) {
+          Text("Setujui")
+        }
+        OutlinedButton(onClick = { onReject(request.id) }, shape = MaterialTheme.shapes.small) {
+          Text("Tolak")
+        }
+      }
+    }
+
+    if (requests.size > 3) {
+      Spacer(modifier = Modifier.height(Spacing.sm))
+      Text(
+        text = "…dan ${requests.size - 3} permintaan lain",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    Spacer(modifier = Modifier.height(Spacing.sm))
+    TextButton(onClick = onOpenSettings) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+          imageVector = Icons.Outlined.Shield,
+          contentDescription = null,
+          modifier = Modifier.size(Sizes.iconSm),
+        )
+        Spacer(modifier = Modifier.width(Spacing.xs))
+        Text("Atur di Keamanan & Akses", style = MaterialTheme.typography.labelMedium)
+      }
+    }
+  }
+}
+
+/** The WhatsApp channel glyph, in the channel's own colour from the theme. */
+@Composable
+private fun ChannelGlyph() {
+  Box(
+    modifier =
+      Modifier
+        .size(36.dp)
+        .background(MaterialTheme.colorScheme.tertiaryContainer, CircleShape),
+    contentAlignment = Alignment.Center,
+  ) {
+    Icon(
+      imageVector = Icons.Filled.Phone,
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.onTertiaryContainer,
+      modifier = Modifier.size(18.dp),
+    )
+  }
+}
+

@@ -70,3 +70,23 @@ enum class SubScreen(val title: String) {
   DEBUG("Developer & Diagnostik"),
   ;
 }
+
+/**
+ * A jump target inside Pengaturan. Screens deep-link to the exact section that resolves
+ * what they are reporting — tapping "butuh konfirmasi" on Beranda used to dump the user at
+ * the top of a 1200-line settings page with no indication of where to look.
+ */
+enum class SettingsSection(val label: String) {
+  TOP(""),
+  MODEL("Model"),
+  PERSONA("Persona"),
+  CHANNELS("Saluran"),
+  ACCESS("Keamanan"),
+  MEMORY("Memori"),
+  VISION("Vision"),
+  TERMINAL("Terminal"),
+  BROWSER("Browser"),
+  MCP("MCP"),
+  DEVELOPER("Developer"),
+  ;
+}

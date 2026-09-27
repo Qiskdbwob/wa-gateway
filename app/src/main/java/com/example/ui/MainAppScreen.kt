@@ -52,6 +52,7 @@ import com.example.ui.gateway.WhatsAppGatewayScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.memory.MemoryScreen
 import com.example.ui.navigation.MainTab
+import com.example.ui.navigation.SettingsSection
 import com.example.ui.navigation.SubScreen
 import com.example.ui.settings.SettingsScreen
 import com.example.ui.tasks.TasksScreen
@@ -80,6 +81,10 @@ fun MainAppScreen(
 ) {
   var currentTab by rememberSaveable { mutableStateOf(MainTab.HOME) }
   var subScreen by rememberSaveable { mutableStateOf(SubScreen.NONE) }
+  // Set when a screen asks Pengaturan to open on one specific section (Home's approval
+  // queue points at Keamanan & Akses). Cleared once the section has been reached, so the
+  // next visit starts at the top.
+  var settingsSection by rememberSaveable { mutableStateOf(SettingsSection.TOP) }
   val tabStateHolder = rememberSaveableStateHolder()
 
   // Back means "up one level": first leave a pushed screen, then return to Beranda, then
@@ -113,6 +118,12 @@ fun MainAppScreen(
           currentTab = currentTab,
           onSelectTab = { currentTab = it },
           onOpenSubScreen = { subScreen = it },
+          onOpenSettingsSection = {
+            settingsSection = it
+            currentTab = MainTab.SETTINGS
+          },
+          settingsSection = settingsSection,
+          onSettingsSectionConsumed = { settingsSection = SettingsSection.TOP },
           tabStateHolder = tabStateHolder,
         )
 
@@ -153,6 +164,9 @@ private fun AppShell(
   currentTab: MainTab,
   onSelectTab: (MainTab) -> Unit,
   onOpenSubScreen: (SubScreen) -> Unit,
+  onOpenSettingsSection: (SettingsSection) -> Unit,
+  settingsSection: SettingsSection,
+  onSettingsSectionConsumed: () -> Unit,
   tabStateHolder: SaveableStateHolder,
 ) {
   BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -165,7 +179,15 @@ private fun AppShell(
           Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
           Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
             TabHost(currentTab = currentTab, tabStateHolder = tabStateHolder) { tab ->
-              TabContent(tab, viewModel, onSelectTab, onOpenSubScreen)
+              TabContent(
+                tab = tab,
+                viewModel = viewModel,
+                onSelectTab = onSelectTab,
+                onOpenSubScreen = onOpenSubScreen,
+                onOpenSettingsSection = onOpenSettingsSection,
+                settingsSection = settingsSection,
+                onSettingsSectionConsumed = onSettingsSectionConsumed,
+              )
             }
           }
         }
@@ -178,7 +200,15 @@ private fun AppShell(
       ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding).imePadding()) {
           TabHost(currentTab = currentTab, tabStateHolder = tabStateHolder) { tab ->
-            TabContent(tab, viewModel, onSelectTab, onOpenSubScreen)
+            TabContent(
+              tab = tab,
+              viewModel = viewModel,
+              onSelectTab = onSelectTab,
+              onOpenSubScreen = onOpenSubScreen,
+              onOpenSettingsSection = onOpenSettingsSection,
+              settingsSection = settingsSection,
+              onSettingsSectionConsumed = onSettingsSectionConsumed,
+            )
           }
         }
       }
@@ -225,6 +255,9 @@ private fun TabContent(
   viewModel: WaGatewayViewModel,
   onSelectTab: (MainTab) -> Unit,
   onOpenSubScreen: (SubScreen) -> Unit,
+  onOpenSettingsSection: (SettingsSection) -> Unit,
+  settingsSection: SettingsSection,
+  onSettingsSectionConsumed: () -> Unit,
 ) {
   when (tab) {
     MainTab.HOME ->
@@ -232,7 +265,7 @@ private fun TabContent(
         viewModel = viewModel,
         onNavigateToChat = { onSelectTab(MainTab.CHAT) },
         onNavigateToGateway = { onOpenSubScreen(SubScreen.GATEWAY) },
-        onNavigateToSettings = { onSelectTab(MainTab.SETTINGS) },
+        onNavigateToSettings = onOpenSettingsSection,
         onNavigateToTasks = { onSelectTab(MainTab.TASKS) },
       )
 
@@ -253,6 +286,8 @@ private fun TabContent(
         onNavigateToDebug = { onOpenSubScreen(SubScreen.DEBUG) },
         onNavigateToTerminal = { onOpenSubScreen(SubScreen.TERMINAL) },
         onNavigateToBrowser = { onOpenSubScreen(SubScreen.BROWSER) },
+        initialSection = settingsSection,
+        onSectionConsumed = onSettingsSectionConsumed,
       )
   }
 }

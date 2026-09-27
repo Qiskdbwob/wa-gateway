@@ -3,6 +3,7 @@ package com.example.ui.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -28,6 +31,7 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
@@ -43,24 +47,34 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.ui.components.ConnectionStatusBadge
+import com.example.ui.components.ScreenHeader
 import com.example.ui.components.SectionHeader
+import com.example.ui.navigation.SettingsSection
 import com.example.ui.theme.AgentEmerald
 import com.example.ui.theme.AgentWhatsAppGreen
+import com.example.ui.theme.Spacing
 import com.example.wagateway.WaGatewayViewModel
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
@@ -69,6 +83,8 @@ fun SettingsScreen(
     onNavigateToDebug: () -> Unit,
     onNavigateToTerminal: () -> Unit = {},
     onNavigateToBrowser: () -> Unit = {},
+    initialSection: SettingsSection = SettingsSection.TOP,
+    onSectionConsumed: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val baseUrl by viewModel.agentBaseUrl.collectAsState()
@@ -121,6 +137,28 @@ fun SettingsScreen(
     var showVisionKey by remember { mutableStateOf(false) }
     var showApiKey by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+
+    // Measured y offset of each section inside this scrollable column. A section header is a
+    // direct child of the column, so its offset within the parent is a valid scroll target.
+    val sectionOffsets = remember { mutableStateMapOf<SettingsSection, Int>() }
+    fun anchor(section: SettingsSection): Modifier =
+        Modifier.onGloballyPositioned { coordinates ->
+            sectionOffsets[section] = coordinates.positionInParent().y.roundToInt()
+        }
+
+    // Somewhere else in the app sent the user here to fix one specific thing (an approval
+    // request, a disconnected gateway). Land on that section instead of the top of a
+    // 1200-line page, then clear the request so a later visit starts at the top again.
+    LaunchedEffect(initialSection, sectionOffsets.size) {
+        if (initialSection != SettingsSection.TOP) {
+            val target = sectionOffsets[initialSection]
+            if (target != null) {
+                scrollState.animateScrollTo(target)
+                onSectionConsumed()
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -130,18 +168,25 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Header
-        Column {
-            Text(
-                text = "Pengaturan",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Konfigurasi model AI, persona, saluran, dan preferensi",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        ScreenHeader(
+            title = "Pengaturan",
+            subtitle = "Model, persona, saluran, keamanan, dan tool"
+        )
+
+        // Jump targets, so this long page can be navigated deliberately instead of scrolled
+        // through at random looking for a setting.
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            contentPadding = PaddingValues(vertical = Spacing.xs)
+        ) {
+            items(SettingsSection.entries.filter { it != SettingsSection.TOP }) { section ->
+                AssistChip(
+                    onClick = {
+                        scope.launch { scrollState.animateScrollTo(sectionOffsets[section] ?: 0) }
+                    },
+                    label = { Text(section.label, style = MaterialTheme.typography.labelMedium) }
+                )
+            }
         }
 
         // Feedback Notice
@@ -166,10 +211,7 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.weight(1f)
                     )
-                    IconButton(
-                        onClick = { viewModel.clearFeedback() },
-                        modifier = Modifier.size(24.dp)
-                    ) {
+                    IconButton(onClick = { viewModel.clearFeedback() }) {
                         Text("×", fontWeight = FontWeight.Bold)
                     }
                 }
@@ -177,7 +219,11 @@ fun SettingsScreen(
         }
 
         // 1. Model Provider Configuration
-        SectionHeader(title = "Model & Provider", icon = Icons.Default.AutoAwesome)
+        SectionHeader(
+            title = "Model & Provider",
+            icon = Icons.Default.AutoAwesome,
+            modifier = anchor(SettingsSection.MODEL)
+        )
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -304,7 +350,11 @@ fun SettingsScreen(
         }
 
         // 2. Persona & System Prompt
-        SectionHeader(title = "Agent Persona & Prompt", icon = Icons.Default.Psychology)
+        SectionHeader(
+            title = "Agent Persona & Prompt",
+            icon = Icons.Default.Psychology,
+            modifier = anchor(SettingsSection.PERSONA)
+        )
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -347,7 +397,11 @@ fun SettingsScreen(
         }
 
         // 3. Saluran Terhubung (Channels)
-        SectionHeader(title = "Saluran Terhubung", icon = Icons.Default.Phone)
+        SectionHeader(
+            title = "Saluran Terhubung",
+            icon = Icons.Default.Phone,
+            modifier = anchor(SettingsSection.CHANNELS)
+        )
 
         Card(
             modifier = Modifier
@@ -400,7 +454,11 @@ fun SettingsScreen(
         }
 
         // 4. Keamanan & Akses (Priority 1 + 3)
-        SectionHeader(title = "Keamanan & Akses", icon = Icons.Default.Security)
+        SectionHeader(
+            title = "Keamanan & Akses",
+            icon = Icons.Default.Security,
+            modifier = anchor(SettingsSection.ACCESS)
+        )
 
         Card(
             modifier = Modifier
@@ -564,7 +622,11 @@ fun SettingsScreen(
         }
 
         // 5. Memori Jangka Panjang (Priority 2)
-        SectionHeader(title = "Memori Jangka Panjang", icon = Icons.Default.Psychology)
+        SectionHeader(
+            title = "Memori Jangka Panjang",
+            icon = Icons.Default.Psychology,
+            modifier = anchor(SettingsSection.MEMORY)
+        )
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -725,7 +787,11 @@ fun SettingsScreen(
         }
 
         // 6. Vision untuk Media (Priority 5)
-        SectionHeader(title = "Vision (Analisis Media)", icon = Icons.Default.Visibility)
+        SectionHeader(
+            title = "Vision (Analisis Media)",
+            icon = Icons.Default.Visibility,
+            modifier = anchor(SettingsSection.VISION)
+        )
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -819,7 +885,11 @@ fun SettingsScreen(
         }
 
         // 7. Terminal — tool shell untuk agent + shell interaktif untuk pengguna
-        SectionHeader(title = "Terminal (Tool Agent)", icon = Icons.Default.Terminal)
+        SectionHeader(
+            title = "Terminal (Tool Agent)",
+            icon = Icons.Default.Terminal,
+            modifier = anchor(SettingsSection.TERMINAL)
+        )
 
         Card(
             modifier = Modifier
@@ -882,7 +952,11 @@ fun SettingsScreen(
         }
 
         // 8. Browser automation
-        SectionHeader(title = "Browser Automation", icon = Icons.Default.Public)
+        SectionHeader(
+            title = "Browser Automation",
+            icon = Icons.Default.Public,
+            modifier = anchor(SettingsSection.BROWSER)
+        )
 
         Card(
             modifier = Modifier
@@ -1037,7 +1111,11 @@ fun SettingsScreen(
         }
 
         // 9. MCP Connector
-        SectionHeader(title = "MCP Connector", icon = Icons.Default.Extension)
+        SectionHeader(
+            title = "MCP Connector",
+            icon = Icons.Default.Extension,
+            modifier = anchor(SettingsSection.MCP)
+        )
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1125,7 +1203,11 @@ fun SettingsScreen(
         }
 
         // 10. Developer & Diagnostik
-        SectionHeader(title = "Developer & Diagnostik", icon = Icons.Default.BugReport)
+        SectionHeader(
+            title = "Developer & Diagnostik",
+            icon = Icons.Default.BugReport,
+            modifier = anchor(SettingsSection.DEVELOPER)
+        )
 
         Card(
             modifier = Modifier
