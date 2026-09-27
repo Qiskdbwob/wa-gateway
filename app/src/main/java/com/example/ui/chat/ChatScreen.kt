@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -64,20 +65,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.agent.loop.AgentState
 import com.example.agent.loop.isBusy
 import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentRole
 import com.example.ui.components.EmptyStateCard
-import com.example.ui.theme.AgentEmerald
+import com.example.ui.theme.Sizes
+import com.example.ui.theme.Spacing
+import com.example.ui.theme.telemetry
 import com.example.wagateway.WaGatewayViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -117,8 +118,7 @@ fun ChatScreen(
     ) {
         // Sessions Selector Bar
         Surface(
-            tonalElevation = 1.dp,
-            shadowElevation = 1.dp,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -134,10 +134,7 @@ fun ChatScreen(
                     )
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { viewModel.startNewConversation() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
+                        IconButton(onClick = { viewModel.startNewConversation() }) {
                             Icon(
                                 imageVector = Icons.Default.Add,
                                 contentDescription = "Sesi Baru",
@@ -148,10 +145,7 @@ fun ChatScreen(
 
                         if (selectedSessionId != null) {
                             Box {
-                                IconButton(
-                                    onClick = { showMenu = true },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
+                                IconButton(onClick = { showMenu = true }) {
                                     Icon(
                                         imageVector = Icons.Default.MoreVert,
                                         contentDescription = "Opsi Sesi",
@@ -186,7 +180,7 @@ fun ChatScreen(
                                             Icon(
                                                 imageVector = Icons.Outlined.DeleteOutline,
                                                 contentDescription = null,
-                                                tint = Color.Red
+                                                tint = MaterialTheme.colorScheme.error
                                             )
                                         }
                                     )
@@ -317,7 +311,7 @@ fun ChatScreen(
 
         // Message Input Bar
         Surface(
-            tonalElevation = 2.dp,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -333,12 +327,12 @@ fun ChatScreen(
                     modifier = Modifier
                         .weight(1f)
                         .testTag("chat_input_field"),
-                    shape = RoundedCornerShape(24.dp),
+                    shape = MaterialTheme.shapes.extraLarge,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest
                     ),
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -351,17 +345,16 @@ fun ChatScreen(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
+                val canSend = chatInput.isNotBlank() && !isBusy
                 Box(
                     modifier = Modifier
-                        .size(46.dp)
+                        .size(Sizes.touchTarget)
                         .clip(CircleShape)
                         .background(
-                            if (chatInput.isNotBlank() && !isBusy) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceVariant
+                            if (canSend) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceContainerHigh
                         )
-                        .clickable(enabled = chatInput.isNotBlank() && !isBusy) {
-                            viewModel.sendDirectChatMessage()
-                        }
+                        .clickable(enabled = canSend) { viewModel.sendDirectChatMessage() }
                         .testTag("chat_send_button"),
                     contentAlignment = Alignment.Center
                 ) {
@@ -374,8 +367,8 @@ fun ChatScreen(
                     } else {
                         Icon(
                             imageVector = Icons.Default.Send,
-                            contentDescription = "Kirim",
-                            tint = if (chatInput.isNotBlank()) MaterialTheme.colorScheme.onPrimary
+                            contentDescription = "Kirim pesan",
+                            tint = if (canSend) MaterialTheme.colorScheme.onPrimary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
@@ -404,18 +397,17 @@ fun ChatMessageBubble(
             Box(
                 modifier = Modifier
                     .size(32.dp)
-                    .clip(CircleShape)
-                    .background(AgentEmerald.copy(alpha = 0.15f)),
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.SmartToy,
                     contentDescription = null,
-                    tint = AgentEmerald,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.size(18.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(Spacing.sm))
         }
 
         Column(
@@ -430,36 +422,43 @@ fun ChatMessageBubble(
                     bottomEnd = if (isUser) 4.dp else 16.dp
                 ),
                 color = if (isUser) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-                tonalElevation = 1.dp
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 0.dp
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                     Text(
                         text = message.content,
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurface
                     )
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(Spacing.xs))
 
+                    // The whole footer is the copy target. It used to be a 12dp icon, which is
+                    // both an accessibility failure and easy to miss. This row is deliberately
+                    // below the 48dp guidance because a dense chat bubble cannot carry a 48dp
+                    // row; at 32dp tall and full bubble width it is still comfortably tappable.
                     Row(
-                        modifier = Modifier.align(Alignment.End),
+                        modifier = Modifier
+                            .align(Alignment.End)
+                            .heightIn(min = 32.dp)
+                            .clip(MaterialTheme.shapes.extraSmall)
+                            .clickable { onCopyText() }
+                            .padding(horizontal = Spacing.xs),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = formattedTime,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            style = MaterialTheme.telemetry.label,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(Spacing.xs))
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Salin",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier
-                                .size(12.dp)
-                                .clickable { onCopyText() }
+                            contentDescription = "Salin pesan",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
                         )
                     }
                 }
@@ -493,34 +492,35 @@ fun AgentThinkingBubble(
         Box(
             modifier = Modifier
                 .size(32.dp)
-                .clip(CircleShape)
-                .background(AgentEmerald.copy(alpha = 0.15f)),
+                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Default.SmartToy,
                 contentDescription = null,
-                tint = AgentEmerald,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.size(18.dp)
             )
         }
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(Spacing.sm))
 
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            // The pulse is decoration: the spinner and the label below carry the state on
+            // their own, so the bubble still reads correctly with animations turned off.
             modifier = Modifier.alpha(alphaAnim)
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(14.dp),
                     strokeWidth = 2.dp,
-                    color = AgentEmerald
+                    color = MaterialTheme.colorScheme.primary
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(Spacing.sm))
                 Column {
                     Text(
                         text = when (agentState) {
@@ -541,8 +541,8 @@ fun AgentThinkingBubble(
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = activity,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            style = MaterialTheme.telemetry.label,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2
                         )
                     }

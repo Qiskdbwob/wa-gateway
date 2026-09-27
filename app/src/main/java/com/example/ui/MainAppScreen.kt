@@ -353,10 +353,10 @@ private fun AppNavigationRail(currentTab: MainTab, onSelectTab: (MainTab) -> Uni
         colors =
           NavigationRailItemDefaults.colors(
             selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            selectedLabelColor = MaterialTheme.colorScheme.primary,
+            selectedTextColor = MaterialTheme.colorScheme.primary,
             indicatorColor = MaterialTheme.colorScheme.primaryContainer,
             unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            unselectedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
           ),
         modifier = Modifier.testTag("nav_tab_${tab.name.lowercase()}"),
       )

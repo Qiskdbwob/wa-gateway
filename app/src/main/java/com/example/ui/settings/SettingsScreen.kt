@@ -341,8 +341,8 @@ fun SettingsScreen(
                         checked = useEchoFallback,
                         onCheckedChange = { viewModel.setUseEchoFallback(it) },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = AgentEmerald
+                            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                            checkedTrackColor = MaterialTheme.colorScheme.primary
                         )
                     )
                 }

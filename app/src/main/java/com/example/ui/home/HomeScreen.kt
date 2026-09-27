@@ -50,6 +50,7 @@ import com.example.ui.navigation.SettingsSection
 import com.example.ui.theme.Sizes
 import com.example.ui.theme.Spacing
 import com.example.ui.theme.status
+import com.example.ui.theme.telemetry
 import com.example.wagateway.WaGatewayViewModel
 
 /**

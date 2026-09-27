@@ -61,6 +61,11 @@ import com.example.agent.model.ToolPermission
 import com.example.ui.components.AgentStatusBadge
 import com.example.ui.components.SectionHeader
 import com.example.ui.theme.AgentEmerald
+import com.example.ui.theme.TerminalInk
+import com.example.ui.theme.TerminalInkMuted
+import com.example.ui.theme.TerminalSurface
+import com.example.ui.theme.status
+import com.example.ui.theme.telemetry
 import com.example.wagateway.WaGatewayViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -187,12 +192,15 @@ fun DeveloperDebugScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("WhatsApp Gateway:", style = MaterialTheme.typography.bodySmall)
                         Text(
-                            text = if (isConnected) "Connected" else connectionStatus,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isConnected) AgentEmerald else Color.Gray
+                            text = "WhatsApp Gateway",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (isConnected) "terhubung" else connectionStatus,
+                            style = MaterialTheme.telemetry.value,
+                            color = if (isConnected) MaterialTheme.status.success.ink else MaterialTheme.status.neutral.ink
                         )
                     }
 
@@ -315,7 +323,7 @@ fun DeveloperDebugScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
                         if (isTesting) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Menjalankan Loop...")
                         } else {
@@ -412,13 +420,19 @@ fun DeveloperDebugScreen(
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = tool.permission.name,
+                                    text = when (tool.permission) {
+                                        ToolPermission.SAFE -> "aman"
+                                        ToolPermission.AUTO_SAFE -> "aman otomatis"
+                                        ToolPermission.CONFIRM -> "butuh konfirmasi"
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
+                                    // Three real levels, three distinct tones: this used to be two
+                                    // greens and a literal amber.
                                     color = when (tool.permission) {
-                                        ToolPermission.SAFE -> AgentEmerald
-                                        ToolPermission.AUTO_SAFE -> MaterialTheme.colorScheme.primary
-                                        ToolPermission.CONFIRM -> Color(0xFFF59E0B)
+                                        ToolPermission.SAFE -> MaterialTheme.status.success.ink
+                                        ToolPermission.AUTO_SAFE -> MaterialTheme.status.info.ink
+                                        ToolPermission.CONFIRM -> MaterialTheme.status.warning.ink
                                     }
                                 )
                             }
@@ -435,7 +449,7 @@ fun DeveloperDebugScreen(
                     .fillMaxWidth()
                     .height(240.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                colors = CardDefaults.cardColors(containerColor = TerminalSurface),
                 border = CardDefaults.outlinedCardBorder().copy(
                     brush = androidx.compose.ui.graphics.SolidColor(
                         MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
@@ -447,7 +461,7 @@ fun DeveloperDebugScreen(
                         Text(
                             text = "Belum ada log aktivitas agent.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
+                            color = TerminalInkMuted
                         )
                     }
                 } else {
@@ -464,7 +478,7 @@ fun DeveloperDebugScreen(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp
                                 ),
-                                color = Color(0xFFE2E8F0)
+                                color = TerminalInk
                             )
                         }
                     }

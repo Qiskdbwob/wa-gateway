@@ -124,6 +124,18 @@ internal val DarkNeutral = DarkOnSurfaceVariant
 internal val DarkNeutralContainer = DarkSurfaceContainerHigh
 internal val DarkOnNeutralContainer = Color(0xFFD3DBE6)
 
+// ---------------------------------------------------------------- terminal surface
+/**
+ * The terminal is intentionally dark in BOTH themes: it is a machine-output surface, and a
+ * light-on-dark block reads as "raw output" while the rest of the screen reads as chrome.
+ * The values are fixed rather than theme-derived, but they live here instead of inline in
+ * the screen so the pair stays contrast-reviewable (#E2E8F0 on #0B111B is 15:1, the muted ink
+ * is 7.4:1).
+ */
+val TerminalSurface = Color(0xFF0B111B)
+val TerminalInk = Color(0xFFE2E8F0)
+val TerminalInkMuted = Color(0xFF94A3B8)
+
 // ---------------------------------------------------------------- brand fills
 /**
  * Brand fill colours. These are FILLS (dots, switch tracks, progress indicators) — never

@@ -39,6 +39,7 @@ import com.example.ui.theme.Sizes
 import com.example.ui.theme.Spacing
 import com.example.ui.theme.StatusTone
 import com.example.ui.theme.status
+import com.example.ui.theme.telemetry
 
 // =====================================================================================
 // Shared UI primitives.

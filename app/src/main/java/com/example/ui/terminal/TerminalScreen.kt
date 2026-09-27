@@ -1,5 +1,6 @@
 package com.example.ui.terminal
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,12 +45,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.example.ui.theme.TerminalInk
+import com.example.ui.theme.TerminalInkMuted
+import com.example.ui.theme.TerminalSurface
+import com.example.ui.theme.telemetry
 import com.example.wagateway.WaGatewayViewModel
 
 /**
@@ -126,13 +128,14 @@ fun TerminalScreen(
         ) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text = "cwd: ${state.cwd}",
-                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.telemetry.label,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -166,14 +169,14 @@ fun TerminalScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
+                    .background(TerminalSurface, MaterialTheme.shapes.medium)
             ) {
                 if (state.lines.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = "Ketik perintah untuk memulai.\nShell berjalan di workspace agent.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
+                            color = TerminalInkMuted
                         )
                     }
                 } else {
@@ -187,11 +190,8 @@ fun TerminalScreen(
                         items(state.lines) { line ->
                             Text(
                                 text = line,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp
-                                ),
-                                color = Color(0xFFE2E8F0)
+                                style = MaterialTheme.telemetry.block,
+                                color = TerminalInk
                             )
                         }
                     }
@@ -211,19 +211,19 @@ fun TerminalScreen(
                         .testTag("terminal_input"),
                     placeholder = { Text("ls -la") },
                     singleLine = true,
-                    shape = RoundedCornerShape(10.dp)
+                    shape = MaterialTheme.shapes.small
                 )
                 Button(
                     onClick = { viewModel.sendTerminalCommand() },
                     enabled = !state.busy && input.isNotBlank(),
                     modifier = Modifier.testTag("terminal_run"),
-                    shape = RoundedCornerShape(10.dp),
+                    shape = MaterialTheme.shapes.small,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     if (state.busy) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onPrimary,
                             strokeWidth = 2.dp
                         )
                     } else {

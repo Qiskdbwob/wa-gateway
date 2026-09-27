@@ -60,6 +60,7 @@ import com.example.ui.components.TelemetryLine
 import com.example.ui.theme.StatusTone
 import com.example.ui.theme.Spacing
 import com.example.ui.theme.status
+import com.example.ui.theme.telemetry
 import com.example.wagateway.WaGatewayViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
