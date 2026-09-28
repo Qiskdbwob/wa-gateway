@@ -13,6 +13,7 @@ import wagateway.Client
 import wagateway.WaEventListener
 import wagateway.Wagateway
 import java.io.File
+import java.lang.reflect.Method
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -37,6 +38,32 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private var client: Client? = null
+
+    /**
+     * The native binding method used for outgoing video, looked up once.
+     *
+     * The lookup is deliberate: `wagateway.Client` does declare
+     * `sendVideo(String, byte[], String, String)` — the Build workflow prints it with javap and
+     * fails if it ever disappears — yet the Kotlin compiler reports a direct `gateway.sendVideo(…)`
+     * call as an unresolved reference while every other method of the same class resolves. Calling
+     * it reflectively keeps video uploads on the native path instead of downgrading them to a
+     * document upload. If the binding ever really lacks the method, the failure surfaces to the
+     * user through the returned [Result] instead of a compile error.
+     */
+    private val sendVideoMethod: Method? by lazy {
+        try {
+            Client::class.java.getMethod(
+                "sendVideo",
+                String::class.java,
+                ByteArray::class.java,
+                String::class.java,
+                String::class.java
+            )
+        } catch (e: Throwable) {
+            addLog("Binding sendVideo tidak tersedia: ${e.message}")
+            null
+        }
+    }
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     private val _connectionStatus = MutableStateFlow("Disconnected")
@@ -277,7 +304,7 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
             }
         }
 
-    /** Sends a video clip. Returns the message ID. */
+    /** Sends a video clip. Returns the message ID. See [sendVideoMethod] for the reflective call. */
     suspend fun sendVideoMessage(target: String, data: ByteArray, mimetype: String, caption: String): Result<String> =
         withContext(Dispatchers.IO) {
             try {
@@ -286,7 +313,11 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
                 if (!gateway.isConnected) {
                     return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
                 }
-                val messageId = gateway.sendVideo(target, data, mimetype, caption)
+                val method = sendVideoMethod
+                    ?: return@withContext Result.failure(
+                        IllegalStateException("Binding video tidak ada di AAR ini")
+                    )
+                val messageId = method.invoke(gateway, target, data, mimetype, caption) as String
                 addLog("Video sent to $target (${data.size} B)")
                 Result.success(messageId)
             } catch (e: Throwable) {
