@@ -84,7 +84,7 @@ jobs:
       - name: Unit tests
         # Incremental compilation reuses a cached ABI snapshot of the binding; after the AAR is
         # replaced that snapshot can hide methods that do exist in the new one.
-        run: gradle testDebugUnitTest --no-daemon --stacktrace -Pkotlin.incremental=false
+        run: gradle testDebugUnitTest --no-daemon --stacktrace -Pkotlin.incremental=false --no-build-cache
 
       # Gradle only prints failing tests, so summarise the XML reports to make the
       # evidence visible in the log: which test classes ran and how many passed.
