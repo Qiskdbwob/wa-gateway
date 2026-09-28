@@ -263,10 +263,15 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 * **Progres nyata**: retry, fallback, dan pemakaian tool dari Agent Loop mengedit bubble yang sama
   (mis. `↻ Mencoba ulang (2/2)...`, `🔧 Menggunakan tool: current_time...`).
 * **Jawaban terpotong dilanjutkan**: kalau provider menghentikan jawaban karena batas panjang
-  keluaran (`finish_reason = "length"`), Agent Loop meminta lanjutannya (maksimum 2 kali) dan
-  menyambungnya ke teks yang sudah ada. Kalau tetap terpotong, gelembungnya ditutup keterangan
-  jujur `(…jawaban tetap terpotong karena batas panjang model)` — bukan kalimat yang menggantung
+  keluaran (`finish_reason = "length"`) **atau** teksnya berhenti di tengah kalimat (berakhir
+  dengan `:`, `…`, tanda buka, atau kata seperti `dan`/`lalu`/`untuk` walau provider bilang
+  "stop"), Agent Loop meminta lanjutannya (maksimum 2 kali) dan menyambungnya ke teks yang sudah
+  ada. Kalau tetap belum selesai, gelembungnya ditutup keterangan jujur
+  `(…jawaban terpotong: <alasan>. Kirim "lanjut" untuk sisanya.)` — bukan kalimat menggantung
   seperti "Sepertinya akses pencarian web sedang tidak tersedia. Aku coba dari sumber langsung:".
+* **Jawaban panjang dipecah utuh**: di atas 3.500 karakter, jawaban dikirim sebagai beberapa bubble
+  pada batas paragraf/kalimat (fungsi murni `splitForWhatsApp`, tanpa satu karakter hilang). Ini
+  mencegah ekor jawaban terpotong atau gagal terkirim karena batas bubble WhatsApp.
 
 ---
 
@@ -543,8 +548,12 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
   sehingga perilakunya belum bisa diuji di perangkat.
 * Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
   skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
-  `web_search` (scrape **Bing** sebagai sumber default, **DuckDuckGo** sebagai fallback; parser
-  diuji unit di `WebSearchScrapeTest`), `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
+  `web_search` (keyless, 4 sumber: **Bing** → **DuckDuckGo** → **Mojeek** → **Wikipedia** sebagai
+  upaya terakhir yang dilabeli ensiklopedia; setiap percobaan dicatat sehingga "0 hasil" dan
+  "diblokir/anti-bot" tidak pernah tertukar — kalau semua diblokir, tool *gagal* dengan instruksi
+  "jangan mengarang, tawarkan web_fetch/ulangi nanti" alih-alih jawaban kosong yang membuat model
+  mengarang; seluruh pencarian dibatasi 25 detik supaya chat tidak menggantung; parser diuji unit di
+  `WebSearchScrapeTest` dan aturan kejujurannya di `WebSearchToolTest`), `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
   `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,

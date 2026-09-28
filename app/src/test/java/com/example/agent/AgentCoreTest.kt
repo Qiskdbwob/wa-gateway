@@ -756,9 +756,45 @@ class AgentCoreTest {
         val content = loop.processMessage("conv-still-truncated", "tulis laporan").getOrThrow()
 
         assertTrue(content.startsWith("Laporan panjang yang terpotong"))
-        assertTrue(content.contains("jawaban tetap terpotong"))
+        // The user is told the rest is missing and how to ask for it, instead of a silent cut.
+        assertTrue(content.contains("jawaban terpotong: batas panjang model"))
+        assertTrue(content.contains("Kirim \"lanjut\" untuk sisanya."))
         // Initial call plus the bounded number of continuations — never an unbounded loop.
         assertEquals(3, provider.calls)
+    }
+
+    @Test
+    fun anAnswerThatStopsOnADanglingColonIsContinuedEvenWithoutALengthMarker() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        // The screenshot case: the provider calls the turn complete, but the text obviously is not.
+        val provider = TruncatingProvider(
+            truncatedCalls = 0,
+            first = "Sepertinya akses pencarian web sedang tidak tersedia. Aku coba dari sumber langsung:",
+            remainder = "berikut tiga berita AI dari sumber resmi hari ini."
+        )
+        val loop = AgentLoop(agent = Agent(enabled = true), modelProvider = provider, sessionRepository = repo)
+
+        val content = loop.processMessage("conv-dangling", "kirim berita AI").getOrThrow()
+
+        assertTrue(content.contains("Aku coba dari sumber langsung:"))
+        assertTrue(content.contains("berikut tiga berita AI dari sumber resmi hari ini."))
+        assertEquals(2, provider.calls)
+    }
+
+    @Test
+    fun aReplyThatEndsWithAConjunctionIsAlsoTreatedAsUnfinished() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        val provider = TruncatingProvider(
+            truncatedCalls = 0,
+            first = "Berikut ringkasannya, dan",
+            remainder = "itu saja yang perlu Anda tahu."
+        )
+        val loop = AgentLoop(agent = Agent(enabled = true), modelProvider = provider, sessionRepository = repo)
+
+        val content = loop.processMessage("conv-conjunction", "ringkas dong").getOrThrow()
+
+        assertTrue(content.contains("itu saja yang perlu Anda tahu."))
+        assertEquals(2, provider.calls)
     }
 
     @Test

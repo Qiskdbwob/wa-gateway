@@ -109,6 +109,47 @@ private const val MAX_WHITELIST_NOTICES = 200
 /** Videos above this size are not sent inline to the vision model (base64 inflates them). */
 private const val MAX_INLINE_VIDEO_BYTES = 15 * 1024 * 1024
 
+/**
+ * Characters per outgoing WhatsApp bubble.
+ *
+ * WhatsApp's hard text limit is far higher (65,536), but long bubbles are exactly what gets
+ * truncated or rejected in practice — by the edit window, by the client, by copy-paste. Splitting a
+ * long answer into several bubbles keeps every character deliverable, which matters more than the
+ * "one bubble per answer" nicety.
+ */
+internal const val WHATSAPP_CHUNK_CHARS = 3_500
+
+/**
+ * Splits an answer into bubbles of at most [limit] characters **without losing a character**: the
+ * chunks concatenate back to the original text, since breaks are taken at existing boundaries.
+ *
+ * Break preference is paragraph → line → sentence → word, and a hard cut only when a single word is
+ * longer than the limit. Without this, a long report would either arrive as one bubble WhatsApp
+ * silently truncates or fail to send at all (the user then sees the "sedang berpikir" bubble stuck).
+ */
+internal fun splitForWhatsApp(text: String, limit: Int = WHATSAPP_CHUNK_CHARS): List<String> {
+    if (limit <= 0 || text.length <= limit) return listOf(text)
+    val chunks = mutableListOf<String>()
+    var start = 0
+    while (start < text.length) {
+        var end = minOf(start + limit, text.length)
+        if (end < text.length) {
+            val window = text.substring(start, end)
+            val breakAt = listOf("\n\n", "\n", ". ", "! ", "? ").firstNotNullOfOrNull { marker ->
+                val index = window.lastIndexOf(marker)
+                if (index > 0 && index >= window.length * MIN_CHUNK_FILL) index + marker.length else null
+            }
+            if (breakAt != null) end = start + breakAt
+        }
+        chunks += text.substring(start, end)
+        start = end
+    }
+    return chunks
+}
+
+/** A chunk should not be mostly empty just to reach a nicer break. */
+private const val MIN_CHUNK_FILL = 0.5
+
 class WhatsAppChannelAdapter(
     private val gatewayManager: OutgoingMessageSender,
     /**
@@ -131,18 +172,29 @@ class WhatsAppChannelAdapter(
             return Result.failure(IllegalArgumentException("Cannot send empty response to WhatsApp"))
         }
 
-        // Turn the "sedang berpikir..." placeholder into the real answer when possible, so
-        // the chat keeps one bubble instead of two. Edits can fail (WhatsApp only accepts
-        // them for a limited window), in which case we fall back to a normal send.
+        // A long answer goes out as several bubbles so no tail is ever dropped; a short one stays a
+        // single bubble as before.
+        val chunks = splitForWhatsApp(response.content)
+
+        // Turn the "sedang berpikir..." placeholder into the first chunk when possible, so the chat
+        // keeps one bubble. Edits can fail (WhatsApp only accepts them for a limited window), in
+        // which case we fall back to a normal send.
         val editTarget = input.metadata[EDIT_TARGET_KEY]
-        if (!editTarget.isNullOrBlank()) {
-            val edited = gatewayManager.editText(input.conversationId, editTarget, response.content)
-            if (edited.isSuccess) {
-                return Result.success(Unit)
+        val editedFirst = !editTarget.isNullOrBlank() &&
+            gatewayManager.editText(input.conversationId, editTarget, chunks.first()).isSuccess
+        if (!editedFirst) {
+            val firstChunk = gatewayManager.sendText(input.conversationId, chunks.first())
+            if (firstChunk.isFailure) {
+                return firstChunk.map { }
             }
         }
 
-        return gatewayManager.sendText(input.conversationId, response.content).map { }
+        // The rest are separate bubbles. A failure here is logged by the loop, but it must not
+        // report the whole answer as undelivered — the first chunk did arrive.
+        for (chunk in chunks.drop(1)) {
+            gatewayManager.sendText(input.conversationId, chunk)
+        }
+        return Result.success(Unit)
     }
 }
 

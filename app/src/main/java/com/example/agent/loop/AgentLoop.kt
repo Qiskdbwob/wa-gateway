@@ -82,6 +82,18 @@ private const val CONTINUATION_PROMPT =
         "terakhir yang sudah tertulis, tanpa mengulang kalimat sebelumnya dan tanpa pembuka. " +
         "Bila sudah lengkap, akhiri dengan kalimat penutup yang wajar."
 
+/** Endings that mean the answer finished on purpose. */
+private const val FINISHED_END_CHARS = ".!?)]\"'*"
+
+/** Endings that read as "more is coming": a colon, a comma, an ellipsis, an opening bracket. */
+private const val UNFINISHED_END_CHARS = ":,;-–—…([</"
+
+/** Words that cannot end a sentence — a reply stopping here was cut off. */
+private val UNFINISHED_END_WORDS = setOf(
+    "dan", "atau", "lalu", "terus", "serta", "karena", "sehingga", "yaitu", "dengan",
+    "untuk", "agar", "supaya", "biar", "jika", "kalau", "tapi", "namun", "tetapi"
+)
+
 class AgentLoop(
     var agent: Agent = Agent(),
     modelProvider: ModelProvider = EchoTestProvider(),
@@ -557,7 +569,7 @@ class AgentLoop(
                             // (finish_reason=length). Delivered as is, that fragment is what makes
                             // the agent look like it halted in the middle of a task, so the
                             // remainder is requested and appended before the answer goes out.
-                            val answer = completeTruncatedAnswer(
+                            val answer = completeUnfinishedAnswer(
                                 initial = modelResponse,
                                 activeHistory = activeHistory,
                                 sessionId = session.sessionId,
@@ -747,18 +759,22 @@ class AgentLoop(
     )
 
     /**
-     * Finishes an answer the model cut off at its output limit.
+     * Finishes an answer the model stopped writing before it was done.
      *
-     * Most providers report that as `finish_reason = "length"`: the response is valid, it simply
-     * stops mid-sentence. Sending it as is is exactly the "agent berhenti di tengah tugas" the
-     * user sees — a bubble that ends with "Aku coba dari sumber langsung:" and nothing after it.
+     * Two cases, both of which the user experiences as "agent berhenti di tengah tugas":
      *
-     * So the assistant turn plus a short "continue" instruction are appended and the model is
-     * asked for the remainder, which is joined to what was already written. Bounded by
-     * [MAX_ANSWER_CONTINUATIONS]; if the answer is still cut off afterwards the text says so
-     * instead of silently ending in the middle.
+     *   1. the provider reports `finish_reason = "length"` — a valid response cut off at the output
+     *      cap, and
+     *   2. the text simply stops in the middle ("... Aku coba dari sumber langsung:") while the
+     *      provider reports a normal stop, which planning-style models do when they narrate a step
+     *      and then close the turn.
+     *
+     * In both cases the assistant turn plus a short "continue" instruction are appended and the
+     * model is asked for the remainder, which is joined to what was already written. Bounded by
+     * [MAX_ANSWER_CONTINUATIONS]; if the answer still ends mid-thought afterwards the text says so
+     * — and tells the user how to get the rest — instead of stopping silently.
      */
-    private suspend fun completeTruncatedAnswer(
+    private suspend fun completeUnfinishedAnswer(
         initial: ModelResponse,
         activeHistory: List<AgentMessage>,
         sessionId: String,
@@ -766,7 +782,7 @@ class AgentLoop(
         generate: suspend (List<AgentMessage>) -> Result<ModelResponse>,
         onContinuationCall: (ModelResponse) -> Unit
     ): CompletedAnswer {
-        if (initial.finishReason != TRUNCATED_FINISH_REASON || initial.content.isBlank()) {
+        if (initial.content.isBlank()) {
             return CompletedAnswer(initial.content, initial.finishReason)
         }
 
@@ -774,10 +790,11 @@ class AgentLoop(
         var finishReason = initial.finishReason
         var rounds = 0
         var lastError: String? = null
+        var unfinished = finishReason == TRUNCATED_FINISH_REASON || looksUnfinished(content)
 
-        while (finishReason == TRUNCATED_FINISH_REASON && rounds < MAX_ANSWER_CONTINUATIONS) {
+        while (unfinished && rounds < MAX_ANSWER_CONTINUATIONS) {
             rounds++
-            log("ANSWER_CONTINUATION", "Jawaban terpotong (batas panjang model); meminta lanjutan $rounds")
+            log("ANSWER_CONTINUATION", "Jawaban belum selesai; meminta lanjutan $rounds")
             emitProgress("✂️ Jawaban terpotong, meminta lanjutannya...")
             val history = activeHistory + listOf(
                 AgentMessage(
@@ -807,19 +824,43 @@ class AgentLoop(
             if (piece.isEmpty()) break
             content = joinContinuation(content, piece)
             finishReason = next.finishReason
+            unfinished = finishReason == TRUNCATED_FINISH_REASON || looksUnfinished(content)
         }
 
-        if (finishReason == TRUNCATED_FINISH_REASON) {
-            // Honest instead of silently cut: the user is told the rest is missing.
-            log("ANSWER_CONTINUATION", "Lanjutan tetap terpotong: ${lastError ?: "batas panjang model"}")
-            content += "\n\n(…jawaban tetap terpotong karena batas panjang model" +
-                (lastError?.let { ": $it" } ?: "") + ")"
+        if (unfinished) {
+            // Honest instead of silently cut: the user is told the rest is missing and how to get it.
+            val why = if (finishReason == TRUNCATED_FINISH_REASON) {
+                "batas panjang model"
+            } else {
+                "model berhenti sebelum selesai"
+            }
+            log("ANSWER_CONTINUATION", "Jawaban tetap belum selesai ($why): ${lastError ?: "tanpa error"}")
+            content += "\n\n(…jawaban terpotong: $why" +
+                (lastError?.let { " — $it" } ?: "") + ". Kirim \"lanjut\" untuk sisanya.)"
         }
         return CompletedAnswer(
             content = content,
             finishReason = finishReason,
             metadata = mapOf("answerContinuations" to rounds.toString())
         )
+    }
+
+    /**
+     * Cheap "the model stopped before it finished" check for answers the provider calls complete.
+     *
+     * Only the very end of the text is inspected, so a long answer that merely *contains* a colon is
+     * not treated as unfinished. Closings that are clearly deliberate (`.`/`!`/`)`) win over the
+     * heuristic; a markdown code fence is treated as finished too.
+     */
+    private fun looksUnfinished(content: String): Boolean {
+        val tail = content.trimEnd()
+        if (tail.isEmpty()) return true
+        if (tail.endsWith("```")) return false
+        val lastChar = tail.last()
+        if (lastChar in FINISHED_END_CHARS) return false
+        if (lastChar in UNFINISHED_END_CHARS) return true
+        val lastWord = tail.substringAfterLast(' ').trim('*', '_', '`', '"', '\'', '|').lowercase()
+        return lastWord in UNFINISHED_END_WORDS
     }
 
     /**
