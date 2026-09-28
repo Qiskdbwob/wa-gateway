@@ -72,6 +72,8 @@ jobs:
         run: |
           rm -rf "$HOME/.gradle/caches/transforms-"* || true
           rm -rf "$HOME/.gradle/caches"/*/transforms || true
+          rm -rf "$HOME/.gradle/caches/jars-"* || true
+          rm -rf "$HOME/.gradle/caches/build-cache-1" || true
 
       # Prints what the Kotlin compiler should see in the downloaded binding; keeps a stale
       # AAR from turning into a confusing "unresolved reference" report.
