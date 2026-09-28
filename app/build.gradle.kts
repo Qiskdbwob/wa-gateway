@@ -82,6 +82,15 @@ android {
     compose = true
     buildConfig = true
   }
+  packaging {
+    jniLibs {
+      // A device picks the best matching lib/<abi>/ directory in the APK, so a library that ships
+      // its own 32-bit x86 build (androidx.graphics.path does) would leave an x86 directory
+      // without libgojni.so and an x86-only device would install the app and fail on the gateway.
+      // The ABI list of the binding is arm64-v8a / armeabi-v7a / x86_64, so x86 is dropped.
+      excludes += "lib/x86/**"
+    }
+  }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
     includeInApk = false

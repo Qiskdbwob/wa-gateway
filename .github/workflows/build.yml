@@ -152,6 +152,14 @@ jobs:
               missing=1
             fi
           done
+          # A device installs the APK if any lib/<abi>/ matches it, so an ABI directory the
+          # gateway has no library for is worse than no directory at all.
+          for abi in $(unzip -l "$APK" | grep -oE 'lib/[^/]+/' | cut -d/ -f2 | sort -u); do
+            if ! unzip -l "$APK" | grep -q "lib/$abi/libgojni.so"; then
+              echo "::error::$APK offers lib/$abi/ without libgojni.so; a device on that ABI would install and fail"
+              missing=1
+            fi
+          done
           exit $missing
 
       - name: Upload debug APK
