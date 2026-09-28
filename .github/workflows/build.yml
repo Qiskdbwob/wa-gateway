@@ -105,6 +105,40 @@ jobs:
 
       # Gradle only prints failing tests, so summarise the XML reports to make the
       # evidence visible in the log: which test classes ran and how many passed.
+      # Kotlin once reported sendVideo as unresolved in the very same job whose javap output
+      # above lists it, which can only mean the compiler reads a different wagateway.Client than
+      # the one in app/libs. Resolution happens while the compile runs, so this probe has to come
+      # after it. Diagnostic only: it never fails the build.
+      - name: Debug where Kotlin reads wagateway.Client
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          echo "== entries in the AAR =="
+          unzip -l app/libs/wagateway.aar | head -20
+          echo "== everything wagateway-shaped Gradle produced =="
+          find "$HOME/.gradle" "$PWD/app/build" /tmp -path "*wagateway*" 2>/dev/null | head -40
+          echo "== each of those jars: does its wagateway.Client declare sendVideo? =="
+          for j in $(find "$HOME/.gradle" "$PWD/app/build" /tmp -name "*.jar" -path "*wagateway*" 2>/dev/null); do
+            echo "-- $j ($(sha256sum "$j" | cut -c1-16)) sendVideo=$(javap -classpath "$j" wagateway.Client 2>/dev/null | grep -c " sendVideo(")"
+          done
+          echo "== what the configuration resolves =="
+          gradle :app:dependencies --configuration debugCompileClasspath --console=plain --no-daemon 2>&1 |
+            grep -i -B2 -A6 wagateway
+          echo "== compileDebugKotlin inputs =="
+          cat > /tmp/probe.gradle <<'EOF'
+          gradle.projectsEvaluated {
+            def app = gradle.rootProject.findProject(':app')
+            def task = app?.tasks?.findByName('compileDebugKotlin')
+            try {
+              task?.inputs?.files?.files?.each { println "INPUT $it" }
+            } catch (Throwable t) {
+              println "probe failed: $t"
+            }
+          }
+          EOF
+          gradle :app:help --init-script /tmp/probe.gradle --no-daemon --console=plain 2>&1 | grep "INPUT " | grep -i -E "wagateway|aar|jar" | head -40
+
       - name: Unit test summary
         if: always()
         run: |
