@@ -1,7 +1,6 @@
 package wagateway
 
 import (
-	"strings"
 	"testing"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -223,29 +222,44 @@ func TestStickerMimetypeDefaultsToWebp(t *testing.T) {
 	}
 }
 
-// TestStickerPayloadIsNotClaimedByTheImageBranch pins why DownloadMedia checks the sticker type
-// first and insists on an image mimetype: StickerMessage shares field 1 (URL) with ImageMessage
-// but numbers the rest differently, so the reverse direction is what has to be rejected.
-func TestStickerPayloadIsNotClaimedByTheImageBranch(t *testing.T) {
-	payload, err := proto.Marshal(stickerMessage().GetStickerMessage())
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+// TestStickerPayloadIsRecognisedOnlyForRealStickers pins the guard that tells a sticker apart
+// from the other media types. StickerMessage shares field 1 (URL) with every other inner message
+// and protobuf keeps a field whose wire type does not match as an unknown one rather than
+// failing, so an ordinary photo also decodes into a StickerMessage; without the mimetype check
+// the sticker branch would swallow it and every download would be attempted as an image.
+func TestStickerPayloadIsRecognisedOnlyForRealStickers(t *testing.T) {
+	marshal := func(t *testing.T, msg proto.Message) []byte {
+		t.Helper()
+		payload, err := proto.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return payload
 	}
 
-	// ImageMessage reads field 5 as a varint fileLength while StickerMessage writes the
-	// "image/webp" mimetype there, so the payload must not decode as an image.
-	var img waE2E.ImageMessage
-	if err := proto.Unmarshal(payload, &img); err == nil && img.GetURL() != "" {
-		t.Fatal("a sticker payload decoded as an ImageMessage; the sticker guard would be bypassed")
+	sticker := stickerMessage().GetStickerMessage()
+	if !stickerMatchesPayload(marshal(t, sticker)) {
+		t.Fatal("a real sticker payload was not recognised as a sticker")
 	}
 
-	var sticker waE2E.StickerMessage
-	if err := proto.Unmarshal(payload, &sticker); err != nil {
-		t.Fatalf("unmarshal into StickerMessage: %v", err)
+	others := map[string]proto.Message{
+		"image":    imageMessage().GetImageMessage(),
+		"document": documentMessage().GetDocumentMessage(),
+		"audio": &waE2E.AudioMessage{
+			URL:      proto.String("https://mmg.whatsapp.net/v/t62/voice"),
+			Mimetype: proto.String("audio/ogg"),
+			MediaKey: []byte{1, 2, 3},
+		},
+		"video": &waE2E.VideoMessage{
+			URL:      proto.String("https://mmg.whatsapp.net/v/t62/clip"),
+			Mimetype: proto.String("video/mp4"),
+			MediaKey: []byte{4, 5, 6},
+		},
 	}
-	if !strings.HasPrefix(sticker.GetMimetype(), "image/") || len(sticker.GetMediaKey()) == 0 {
-		t.Fatalf("concrete unmarshal lost the sticker fields: mimetype=%q keyLen=%d",
-			sticker.GetMimetype(), len(sticker.GetMediaKey()))
+	for name, msg := range others {
+		if stickerMatchesPayload(marshal(t, msg)) {
+			t.Fatalf("a %s payload was claimed by the sticker branch", name)
+		}
 	}
 }
 
