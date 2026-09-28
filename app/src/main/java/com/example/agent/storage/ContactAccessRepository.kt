@@ -66,9 +66,15 @@ class ContactAccessRepository(private val dao: ContactRuleDao) {
          * (longest) entry wins inside the same mode.
          */
         fun matchingRule(rules: List<ContactRuleEntity>, contactId: String): ContactRuleEntity? {
-            rules.firstOrNull { it.contactId == contactId }?.let { return it }
-            val cleaned = contactId.trim()
+            // Callers pass whatever WhatsApp delivered, usually a full JID
+            // ("62812...@s.whatsapp.net", "62812...:34@s.whatsapp.net", "...@lid"), so both sides
+            // are reduced to bare digits before comparing. Comparing the raw JID against the
+            // digit-only ids saved by allow()/block() is what left whitelisted numbers blocked.
+            val cleaned = normalizePhone(contactId)
             if (cleaned.isEmpty()) return null
+            // An exact entry always wins and is exempt from the prefix-length floor: a 6-digit
+            // number is a valid contact id, it is only too short to act as a prefix rule.
+            rules.firstOrNull { normalizePhone(it.contactId) == cleaned }?.let { return it }
             val matched = rules.filter { ruleMatchesContact(it.contactId, cleaned) }
             if (matched.isEmpty()) return null
             return matched.minWithOrNull(
@@ -78,11 +84,13 @@ class ContactAccessRepository(private val dao: ContactRuleDao) {
         }
 
         private fun ruleMatchesContact(ruleId: String, contactId: String): Boolean {
-            if (ruleId.length < MIN_PREFIX_DIGITS) return false
-            if (contactId.startsWith(ruleId)) return true
+            // Entries saved by older builds can still carry a JID suffix, so normalize too.
+            val stored = normalizePhone(ruleId)
+            if (stored.length < MIN_PREFIX_DIGITS) return false
+            if (contactId.startsWith(stored)) return true
             // Indonesian local format: an entry typed "08123456789" describes the same line
             // as the international JID digits "628123456789" (leading 0 becomes 62).
-            return ruleId.startsWith("0") && contactId.startsWith("62${ruleId.drop(1)}")
+            return stored.startsWith("0") && contactId.startsWith("62${stored.drop(1)}")
         }
 
         /**

@@ -175,6 +175,16 @@ class Priority1AccessControlTest {
 
         // The exact id always wins.
         assertEquals("62812345", ContactAccessRepository.matchingRule(rules, "62812345")?.contactId)
+        // WhatsApp delivers full JIDs; those must match the entry saved as plain digits.
+        assertEquals(
+            "62812345",
+            ContactAccessRepository.matchingRule(rules, "62812345:12@s.whatsapp.net")?.contactId
+        )
+        // A short exact entry still governs its own sender, even below the prefix floor.
+        assertEquals(
+            "62811",
+            ContactAccessRepository.matchingRule(rules, "62811@s.whatsapp.net")?.contactId
+        )
         // A saved prefix governs the full international number...
         assertEquals("62812345", ContactAccessRepository.matchingRule(rules, "628123456789")?.contactId)
         // ...an exact BLOCK beats a longer prefix ALLOW...
