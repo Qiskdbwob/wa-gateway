@@ -100,20 +100,19 @@ android {
 //
 //   unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
 //
-// A missing jniLibs directory is only a problem when the AAR is present, which the guard below
+// A missing jniLibs directory is only a problem when the AAR is present, which the check below
 // turns into a readable message instead of an APK that fails on the device.
 android.sourceSets.getByName("main").jniLibs.srcDir("libs/wagateway-jni/jni")
 
-tasks.matching { it.name.contains("NativeLibs") }.configureEach {
-  doFirst {
-    if (file("libs/wagateway.aar").isFile && !file("libs/wagateway-jni/jni").isDirectory) {
-      throw GradleException(
-        "app/libs/wagateway.aar is there but its native libraries were never unpacked, so the " +
-          "APK would ship without libgojni.so. Run:\n" +
-          "  unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni"
-      )
-    }
-  }
+// Checked while configuring rather than in a task action: a `doFirst` hook would capture this
+// build script, and Gradle 9's configuration cache refuses to store script object references.
+if (file("libs/wagateway.aar").isFile && !file("libs/wagateway-jni/jni").isDirectory) {
+  throw GradleException(
+    "app/libs/wagateway.aar is present but its native libraries were never unpacked, so the " +
+      "APK would ship without libgojni.so and the gateway would fail with " +
+      "UnsatisfiedLinkError at runtime. Run:\n" +
+      "  unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni"
+  )
 }
 
 // Some unused dependencies are kept commented out below instead of being removed,
