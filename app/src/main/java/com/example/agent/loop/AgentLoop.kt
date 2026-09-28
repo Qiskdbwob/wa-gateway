@@ -494,7 +494,7 @@ class AgentLoop(
                                     _state.value = AgentState.RETRYING
                                     val backoff = classification.retryAfterMs ?: (effectiveRetryPolicy.initialBackoffMs * modelAttempt)
                                     log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms, phase=tool-follow-up")
-                                    emitProgress("> ↻ Terjadi kendala saat memakai tool, mencoba ulang...")
+                                    emitProgress("↻ Terjadi kendala saat memakai tool, mencoba ulang...")
                                     delay(backoff)
                                     continue // retry on same model
                                 } else if (classification.canFallback) {

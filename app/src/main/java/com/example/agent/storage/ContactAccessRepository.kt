@@ -28,11 +28,14 @@ class ContactAccessRepository(private val dao: ContactRuleDao) {
         return ContactAccessPolicy.decide(rule?.mode, whitelistMode)
     }
 
-    suspend fun getAccess(contactId: String, whitelistMode: Boolean): AccessCheck =
-        AccessCheck(
-            decision = getDecision(contactId, whitelistMode),
-            rule = findRule(contactId)
+    /** The rule and the decision derived from it, read once so both always agree. */
+    suspend fun getAccess(contactId: String, whitelistMode: Boolean): AccessCheck {
+        val rule = findRule(contactId)
+        return AccessCheck(
+            decision = ContactAccessPolicy.decide(rule?.mode, whitelistMode),
+            rule = rule
         )
+    }
 
     private suspend fun findRule(contactId: String): ContactRuleEntity? =
         matchingRule(dao.getAll(), contactId)

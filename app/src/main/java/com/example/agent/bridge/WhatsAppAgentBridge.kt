@@ -103,6 +103,12 @@ private const val THINKING_PLACEHOLDER = "⏳ Sedang berpikir..."
 /** WhatsApp drops the typing state after a few seconds, so refresh it while working. */
 private const val TYPING_REFRESH_MS = 8_000L
 
+/** Cap for the one-off "nomor ini belum di whitelist" notices kept per process. */
+private const val MAX_WHITELIST_NOTICES = 200
+
+/** Videos above this size are not sent inline to the vision model (base64 inflates them). */
+private const val MAX_INLINE_VIDEO_BYTES = 15 * 1024 * 1024
+
 class WhatsAppChannelAdapter(
     private val gatewayManager: OutgoingMessageSender
 ) : AgentChannelAdapter {
@@ -224,9 +230,6 @@ class WhatsAppAgentBridge private constructor(
 
     private val _whitelistMode = MutableStateFlow(false)
     val whitelistMode: StateFlow<Boolean> = _whitelistMode.asStateFlow()
-
-    private val _whitelistEnabled = MutableStateFlow(true)
-    val whitelistEnabled: StateFlow<Boolean> = _whitelistEnabled.asStateFlow()
 
     // --- Priority 2: long-term memory -------------------------------------------------
     private val memoryItemDao = AgentDatabase.getInstance(context).memoryItemDao()
@@ -1159,12 +1162,17 @@ class WhatsAppAgentBridge private constructor(
         // Priority 1 — contact access control runs before ANY processing or reply.
         val contactId = agentIdFromJid(conversationId)
         scope.launch {
-            val decision = contactAccess.getDecision(contactId, _whitelistMode.value)
-            if (decision == ContactAccessRepository.Decision.BLOCK) {
+            val access = contactAccess.getAccess(contactId, _whitelistMode.value)
+            if (access.decision == ContactAccessRepository.Decision.BLOCK) {
                 agentLoop.log(
                     "CONTACT_BLOCKED",
-                    "Pesan dari '$contactId' diblokir (whitelistMode=${_whitelistMode.value})."
+                    "Pesan dari '$contactId' diblokir " +
+                        "(rule=${access.rule?.mode ?: \"none\"}, whitelistMode=${_whitelistMode.value})."
                 )
+                // A number blocked only because the whitelist is ON and it was never added
+                // would otherwise get no answer at all, which reads as a broken agent.
+                // Explicit blacklist/PENDING rules keep their silence.
+                if (access.rule == null) notifyNotWhitelisted(conversationId, contactId)
                 return@launch
             }
 
@@ -1184,6 +1192,32 @@ class WhatsAppAgentBridge private constructor(
 
             processAgentTurn(conversationId, sender, text, messageId, timestamp, mediaInfo = null)
         }
+    }
+
+    /**
+     * Contacts already told that their number is not whitelisted. Kept per process so a
+     * stranger cannot make the agent answer every single message with the same notice.
+     */
+    private val notWhitelistNotified: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    /**
+     * Tells a sender why the agent stayed silent: their number is not in the whitelist.
+     * Sent at most once per contact per process; the owner adds numbers in
+     * Pengaturan → Mode whitelist.
+     */
+    private suspend fun notifyNotWhitelisted(conversationId: String, contactId: String) {
+        if (notWhitelistNotified.size >= MAX_WHITELIST_NOTICES) return
+        if (!notWhitelistNotified.add(contactId)) return
+        agentLoop.log(
+            "CONTACT_NOT_WHITELISTED",
+            "Memberi tahu '$contactId' bahwa nomornya belum ada di whitelist."
+        )
+        gatewayManager.sendText(
+            conversationId,
+            "🔐 Nomor ini ($contactId) belum ada di whitelist, jadi pesannya belum diteruskan ke agent.\n" +
+                "Tambahkan nomornya di Pengaturan → Mode whitelist supaya bisa mengobrol dengan agent."
+        )
     }
 
     /** Lazily builds the command handler (needs the loop and repos, all singletons). */
@@ -1485,9 +1519,16 @@ class WhatsAppAgentBridge private constructor(
 
         val contactId = agentIdFromJid(media.chat)
         scope.launch {
-            val decision = contactAccess.getDecision(contactId, _whitelistMode.value)
-            if (decision == ContactAccessRepository.Decision.BLOCK) {
-                agentLoop.log("CONTACT_BLOCKED", "Media dari '$contactId' diblokir.")
+            val access = contactAccess.getAccess(contactId, _whitelistMode.value)
+            if (access.decision == ContactAccessRepository.Decision.BLOCK) {
+                agentLoop.log(
+                    "CONTACT_BLOCKED",
+                    "Media dari '$contactId' diblokir " +
+                        "(rule=${access.rule?.mode ?: \"none\"}, whitelistMode=${_whitelistMode.value})."
+                )
+                if (access.rule == null) {
+                    notifyNotWhitelisted(media.chat.ifBlank { media.sender }, contactId)
+                }
                 return@launch
             }
 
@@ -1553,20 +1594,43 @@ class WhatsAppAgentBridge private constructor(
             return@withContext "Isi dokumen \"${media.filename}\":\n$text"
         }
 
-        if (media.mediaType != "image" && media.mediaType != "video") {
-            return@withContext "(Media ${media.mediaType} diterima; analisis otomatis untuk tipe ini belum tersedia.)"
+        // A photo or video shared "as a file" arrives as a document with an image/video MIME
+        // type; route it by MIME type so vision still runs instead of reporting "not
+        // supported" for media the agent can actually read.
+        val effectiveType = when {
+            media.mediaType != "document" -> media.mediaType
+            media.mimetype.startsWith("image/") -> "image"
+            media.mimetype.startsWith("video/") -> "video"
+            else -> "document"
         }
 
-        // Video: Gemini accepts video bytes inline only for small files; for WhatsApp
-        // videos we take the honest path and ask the vision model about the available
-        // metadata unless it is a small file (Gemini inline limit ~20 MB).
+        if (effectiveType != "image" && effectiveType != "video") {
+            return@withContext if (media.mediaType == "document") {
+                "(Dokumen ${media.mimetype.ifBlank { \"tanpa tipe\" }} diterima, tapi agent belum bisa " +
+                    "membaca format ini. Kirim isinya sebagai teks, atau screenshot halamannya " +
+                    "kalau berupa gambar.)"
+            } else {
+                "(Media ${media.mediaType} diterima; analisis otomatis untuk tipe ini belum tersedia.)"
+            }
+        }
+
+        // Video bytes go to the model inline (base64), so an oversized clip would fail with
+        // an unhelpful provider error; refuse honestly instead.
+        if (effectiveType == "video" && data.size > MAX_INLINE_VIDEO_BYTES) {
+            return@withContext "(Video ${data.size / (1024 * 1024)} MB terlalu besar untuk dianalisis " +
+                "langsung (batas ${MAX_INLINE_VIDEO_BYTES / (1024 * 1024)} MB). Kirim klip yang lebih " +
+                "pendek atau screenshot bagian pentingnya.)"
+        }
+
+        // Vision runs on the bytes downloaded above; video is sent inline, which is why the
+        // size gate below exists instead of letting the provider fail with its own error.
         val provider = visionProvider()
-            ?: return@withContext "(Belum ada model vision dikonfigurasi. Isi API key vision di Pengaturan agar saya bisa melihat ${media.mediaType}.)"
+            ?: return@withContext "(Belum ada model vision dikonfigurasi. Isi API key vision di Pengaturan agar saya bisa melihat ${effectiveType}.)"
 
         val prompt = if (media.caption.isNotBlank()) {
-            "Jelaskan ${media.mediaType} ini secara ringkas dan jawab kebutuhan pengguna. Caption pengguna: \"${media.caption}\""
+            "Jelaskan ${effectiveType} ini secara ringkas dan jawab kebutuhan pengguna. Caption pengguna: \"${media.caption}\""
         } else {
-            "Jelaskan ${media.mediaType} ini secara ringkas: apa isinya, objek/teks penting, dan kesimpulannya."
+            "Jelaskan ${effectiveType} ini secara ringkas: apa isinya, objek/teks penting, dan kesimpulannya."
         }
 
         try {
@@ -1579,11 +1643,11 @@ class WhatsAppAgentBridge private constructor(
                         modelId = _visionConfig.value.modelId
                     )
                 ).getOrElse { e ->
-                    "(Analisis ${media.mediaType} gagal: ${e.message})"
+                    "(Analisis ${effectiveType} gagal: ${e.message})"
                 }
             }
         } catch (e: Exception) {
-            "(Analisis ${media.mediaType} gagal: ${e.message})"
+            "(Analisis ${effectiveType} gagal: ${e.message})"
         }
     }
 

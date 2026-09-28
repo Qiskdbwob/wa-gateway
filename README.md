@@ -184,6 +184,8 @@ membalas secara lokal tanpa jaringan.
 * Saat ini pesan grup diabaikan untuk mencegah agent mengirim ke grup tanpa konfigurasi.
 * **Whitelist mode**: bila diaktifkan (Pengaturan atau `/whitelist on`), hanya nomor yang terdaftar
   yang diproses; pesan lain di-drop sebelum masuk ke model dan dicatat sebagai `CONTACT_BLOCKED`.
+  Nomor yang belum terdaftar **diberi tahu sekali** (`CONTACT_NOT_WHITELISTED`) supaya tidak terasa
+  seperti agent yang mati; nomor yang di-blacklist tetap dibiarkan tanpa balasan.
   Entri boleh nomor lengkap, **prefix nomor** (mis. `62812345` untuk seluruh nomor satu tasal;
   minimal 7 digit), atau **format lokal 08xx** yang otomatis setara dengan bentuk `62…`. Chat dari
   pengirim **@lid** (WhatsApp menyembunyikan nomor) dipetakan ke nomor teleponnya di gateway
@@ -301,7 +303,8 @@ dulu, lalu entri **prefix** (≥7 digit) dan entri **format lokal 08xx** — dan
 menang bila dua entri cocok dengan nomor yang sama. Saat whitelist mode aktif, hanya nomor terdaftar
 yang
 lolos — pengecekan terjadi **sebelum** agent membaca pesan, jadi pesan yang diblokir tidak pernah
-masuk history maupun memori. Pengirim dengan JID **@lid** dipetakan ke nomor telepon di sisi Go
+masuk history maupun memori. Pengirim yang diblokir karena nomornya belum terdaftar mendapat satu
+pesan penjelasan (maks. sekali per kontak per proses), sedangkan entri `BLOCK`/`PENDING` tetap senyap. Pengirim dengan JID **@lid** dipetakan ke nomor telepon di sisi Go
 (`resolveJIDForRules`, memakai LIDStore whatsmeow) sebelum aturan dievaluasi. Pesan grup tetap
 diabaikan. Bisa dikelola dari Pengaturan atau lewat `/whitelist` dan `/blacklist`.
 
@@ -341,9 +344,14 @@ moderator yang menyintesis, dibatasi `withTimeout(120s)` dan panjang jawaban sup
 WhatsApp. `reflect` menyimpan pelajaran sebagai kandidat, bukan langsung dipercaya.
 
 **Media WhatsApp.** Sisi Go mengirim payload protobuf media ke Kotlin (`OnMedia`), lalu bridge
-mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Gambar/video dianalisis provider vision
+mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Sebelum dibaca, envelope WhatsApp dibuka
+dulu (`unwrapMessage`: `ephemeralMessage` untuk chat pesan sementara, `viewOnceMessage` /
+`viewOnceMessageV2` untuk media lihat-sekali, `documentWithCaptionMessage`, plus `ptvMessage` untuk
+video bulat) — tanpa ini chat tersebut tampak kosong. Gambar/video dianalisis provider vision
 (`OpenAiVisionProvider` atau `GeminiVisionProvider` native), dokumen teks dibaca langsung, dan
-hasilnya digabung ke prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
+foto/video yang dikirim sebagai file diarahkan lewat MIME-nya supaya tetap dianalisis. Video besar
+(>15 MB) ditolak dengan alasan jelas karena bytes-nya dikirim inline (base64). Hasilnya digabung ke
+prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
 Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersedia di
 `WaGatewayManager`.
 
@@ -490,7 +498,8 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
-  dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). Bila API key vision
+  dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). PDF/dokumen biner
+  belum bisa dibaca dan stiker belum diproses (keduanya dijawab terus terang). Bila API key vision
   belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
 * Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
   skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
