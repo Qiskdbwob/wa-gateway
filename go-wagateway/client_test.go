@@ -180,11 +180,12 @@ func TestInnerMediaPayloadNeedsConcreteType(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
+	// Reading it back as the outer message fails one of two ways depending on the payload
+	// (wire-format error, or a partial message that never carries the image), and both make
+	// the media unreachable. Either outcome is the bug, so neither may turn into a usable image.
 	var outer waE2E.Message
-	if err := proto.Unmarshal(payload, &outer); err != nil {
-		t.Fatalf("unmarshal into Message: %v", err)
-	}
-	if outer.GetImageMessage() != nil {
+	outerErr := proto.Unmarshal(payload, &outer)
+	if outerErr == nil && outer.GetImageMessage() != nil {
 		t.Fatal("an inner ImageMessage payload unexpectedly filled Message.ImageMessage")
 	}
 
