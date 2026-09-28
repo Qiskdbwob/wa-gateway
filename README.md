@@ -72,7 +72,7 @@ antar kontak tidak pernah tercampur.
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
 | Kontrol akses kontak: whitelist & blacklist (JID dinormalisasi; entri boleh prefix nomor atau format lokal 08xx; pengirim @lid dipetakan ke nomor) | ✅ |
 | Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
-| Pesan media masuk: gambar/video (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
+| Pesan media masuk: gambar/video/stiker (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
 | Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (lewat tool `send_file_to_chat`; tombol kirim manual di UI belum ada) |
 | Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
 | Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
@@ -347,15 +347,17 @@ WhatsApp. `reflect` menyimpan pelajaran sebagai kandidat, bukan langsung diperca
 mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Sebelum dibaca, envelope WhatsApp dibuka
 dulu (`unwrapMessage`: `ephemeralMessage` untuk chat pesan sementara, `viewOnceMessage` /
 `viewOnceMessageV2` untuk media lihat-sekali, `documentWithCaptionMessage`, plus `ptvMessage` untuk
-video bulat) — tanpa ini chat tersebut tampak kosong. Gambar/video dianalisis provider vision
+video bulat dan `lottieStickerMessage`/`audioStickerMessage` untuk stiker) — tanpa ini chat tersebut
+tampak kosong. Stiker dikirim ke agent sebagai gambar (WebP) supaya isinya bisa dilihat. Gambar/video dianalisis provider vision
 (`OpenAiVisionProvider` atau `GeminiVisionProvider` native), dokumen teks dibaca langsung, dan
 foto/video yang dikirim sebagai file diarahkan lewat MIME-nya supaya tetap dianalisis. Video besar
 (>15 MB) ditolak dengan alasan jelas karena bytes-nya dikirim inline (base64). Hasilnya digabung ke
 prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
 **Media keluar.** Tool `send_file_to_chat` mengirim file workspace atas inisiatif model, dan
 routing-nya mengikuti MIME: `image/*` sebagai foto, `video/*` sebagai klip, `audio/ogg` (Ogg/Opus)
-sebagai voice note, sisanya sebagai dokumen — lewat `WaGatewayManager` (`sendImage`, `sendVideo`,
-`sendAudio`, `sendDocument`). Batas ukuran 16 MB (batas WhatsApp).
+sebagai klip video, `audio/ogg` (Ogg/Opus) sebagai voice note, sisanya sebagai dokumen — lewat
+`WaGatewayManager` (`sendImage`, `sendVideoMessage`, `sendAudio`, `sendDocument`). Batas ukuran
+16 MB (batas WhatsApp).
 
 ### Priority 9 — Terminal bawaan (agent bisa curl/wget/bash/python)
 
@@ -502,8 +504,8 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
-  dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). PDF/dokumen biner
-  belum bisa dibaca dan stiker belum diproses (keduanya dijawab terus terang). Bila API key vision
+  dibaca langsung; stiker dibaca sebagai gambar; audio dicatat tetapi belum ditranskripsi (butuh
+  provider STT). PDF/dokumen biner belum bisa dibaca (dijawab terus terang). Bila API key vision
   belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
 * Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
   skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),

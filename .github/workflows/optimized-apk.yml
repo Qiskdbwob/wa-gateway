@@ -72,13 +72,15 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-      # app/libs/wagateway.aar is rewritten at the same path on every build while the runner
-      # restores Gradle's cache, so an extraction of an older AAR can shadow the fresh one and
-      # Kotlin reports methods added since (e.g. sendVideo) as unresolved. Drop them first.
+      # Keep this in sync with the Build workflow: a cached extraction of an older
+      # app/libs/wagateway.aar can shadow the fresh one and turn a binding method the Go code
+      # does export into an "unresolved reference" during compileDebugKotlin.
       - name: Drop cached AAR extraction
         run: |
           rm -rf "$HOME/.gradle/caches/transforms-"* || true
           rm -rf "$HOME/.gradle/caches"/*/transforms || true
+          rm -rf "$HOME/.gradle/caches/jars-"* || true
+          rm -rf "$HOME/.gradle/caches/build-cache-1" || true
 
       - name: Assemble optimized APK
         run: gradle assembleOptimized --no-daemon --stacktrace

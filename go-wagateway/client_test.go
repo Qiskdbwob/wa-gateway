@@ -1,6 +1,7 @@
 package wagateway
 
 import (
+	"strings"
 	"testing"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -29,6 +30,16 @@ func documentMessage() *waE2E.Message {
 			Mimetype: proto.String("application/pdf"),
 			FileName: proto.String("laporan.pdf"),
 			MediaKey: []byte{4, 5, 6},
+		},
+	}
+}
+
+func stickerMessage() *waE2E.Message {
+	return &waE2E.Message{
+		StickerMessage: &waE2E.StickerMessage{
+			URL:      proto.String("https://mmg.whatsapp.net/v/t62/sticker"),
+			Mimetype: proto.String("image/webp"),
+			MediaKey: []byte{7, 8, 9},
 		},
 	}
 }
@@ -120,6 +131,37 @@ func TestUnwrapMessageFindsInnerContent(t *testing.T) {
 			},
 		},
 		{
+			name:    "plain sticker is returned unchanged",
+			wrapped: stickerMessage(),
+			check: func(t *testing.T, got *waE2E.Message) {
+				if got.GetStickerMessage().GetMimetype() != "image/webp" {
+					t.Fatalf("mimetype = %q, want image/webp", got.GetStickerMessage().GetMimetype())
+				}
+			},
+		},
+		{
+			name: "lottie sticker envelope",
+			wrapped: &waE2E.Message{
+				LottieStickerMessage: &waE2E.FutureProofMessage{Message: stickerMessage()},
+			},
+			check: func(t *testing.T, got *waE2E.Message) {
+				if got.GetStickerMessage() == nil {
+					t.Fatal("animated sticker did not unwrap to a sticker message")
+				}
+			},
+		},
+		{
+			name: "audio sticker envelope",
+			wrapped: &waE2E.Message{
+				AudioStickerMessage: &waE2E.FutureProofMessage{Message: stickerMessage()},
+			},
+			check: func(t *testing.T, got *waE2E.Message) {
+				if got.GetStickerMessage() == nil {
+					t.Fatal("audio sticker did not unwrap to a sticker message")
+				}
+			},
+		},
+		{
 			name:    "nested envelopes are opened one after another",
 			wrapped: wrapEphemeral(wrapEphemeral(imageMessage())),
 			check: func(t *testing.T, got *waE2E.Message) {
@@ -167,6 +209,43 @@ func TestUnwrapMessageRespectsDepthCap(t *testing.T) {
 	}
 	if got.GetEphemeralMessage() == nil {
 		t.Fatal("expected the depth cap to leave the remaining envelope in place")
+	}
+}
+
+// TestStickerMimetypeDefaultsToWebp keeps a sticker that carries no mimetype from reaching the
+// vision provider untyped.
+func TestStickerMimetypeDefaultsToWebp(t *testing.T) {
+	if got := stickerMimetype(&waE2E.StickerMessage{}); got != "image/webp" {
+		t.Fatalf("empty sticker mimetype = %q, want image/webp", got)
+	}
+	if got := stickerMimetype(stickerMessage().GetStickerMessage()); got != "image/webp" {
+		t.Fatalf("sticker mimetype = %q, want image/webp", got)
+	}
+}
+
+// TestStickerPayloadIsNotClaimedByTheImageBranch pins why DownloadMedia checks the sticker type
+// first and insists on an image mimetype: StickerMessage shares field 1 (URL) with ImageMessage
+// but numbers the rest differently, so the reverse direction is what has to be rejected.
+func TestStickerPayloadIsNotClaimedByTheImageBranch(t *testing.T) {
+	payload, err := proto.Marshal(stickerMessage().GetStickerMessage())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// ImageMessage reads field 5 as a varint fileLength while StickerMessage writes the
+	// "image/webp" mimetype there, so the payload must not decode as an image.
+	var img waE2E.ImageMessage
+	if err := proto.Unmarshal(payload, &img); err == nil && img.GetURL() != "" {
+		t.Fatal("a sticker payload decoded as an ImageMessage; the sticker guard would be bypassed")
+	}
+
+	var sticker waE2E.StickerMessage
+	if err := proto.Unmarshal(payload, &sticker); err != nil {
+		t.Fatalf("unmarshal into StickerMessage: %v", err)
+	}
+	if !strings.HasPrefix(sticker.GetMimetype(), "image/") || len(sticker.GetMediaKey()) == 0 {
+		t.Fatalf("concrete unmarshal lost the sticker fields: mimetype=%q keyLen=%d",
+			sticker.GetMimetype(), len(sticker.GetMediaKey()))
 	}
 }
 

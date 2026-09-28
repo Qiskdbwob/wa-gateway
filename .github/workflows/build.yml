@@ -66,8 +66,10 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US"
 
       # app/libs/wagateway.aar is rewritten at the same path on every build while the runner
-      # restores Gradle's cache, so an extraction of an older AAR can shadow the fresh one and
-      # Kotlin reports methods added since (e.g. sendVideo) as unresolved. Drop them first.
+      # restores Gradle's cache. The AAR extract transform, the extracted jars and the build
+      # cache can all outlive the file they were computed from, and a stale extraction shows up
+      # as a method the Go binding does declare being reported as "unresolved reference".
+      # Dropping them makes the compiler see the AAR this run built.
       - name: Drop cached AAR extraction
         run: |
           rm -rf "$HOME/.gradle/caches/transforms-"* || true
@@ -75,21 +77,26 @@ jobs:
           rm -rf "$HOME/.gradle/caches/jars-"* || true
           rm -rf "$HOME/.gradle/caches/build-cache-1" || true
 
-      # Prints what the Kotlin compiler should see in the downloaded binding; keeps a stale
-      # AAR from turning into a confusing "unresolved reference" report.
-      - name: Inspect AAR binding
+      # Prints what the Kotlin compiler gets from the downloaded binding and fails fast when a
+      # method the app calls is missing from the AAR. Without this the only symptom is a
+      # confusing "unresolved reference" deep in compileDebugKotlin, which says nothing about
+      # whether the Kotlin source or the Go binding is at fault.
+      - name: Verify AAR binding
         run: |
+          set -euo pipefail
           sha256sum app/libs/wagateway.aar
+          ls -la app/libs
           unzip -p app/libs/wagateway.aar classes.jar > /tmp/wagateway-classes.jar
-          javap -classpath /tmp/wagateway-classes.jar wagateway.Client
-          echo "== resolved debugCompileClasspath =="
-          gradle -q :app:dependencies --configuration debugCompileClasspath --no-daemon | grep -i wagateway || true
-          echo "== semua AAR wagateway di runner =="
-          find / -name "wagateway*.aar" -not -path "/proc/*" 2>/dev/null | head || true
-          echo "== semua Client.class wagateway =="
-          find / -path "*wagateway/Client.class" 2>/dev/null | head || true
-          echo "== isi app/libs =="
-          ls -la app/libs || true
+          javap -classpath /tmp/wagateway-classes.jar wagateway.Client | tee /tmp/wagateway-client.txt
+          missing=0
+          for method in sendText sendImage sendDocument sendAudio sendVideo downloadMedia \
+                        markRead editText setTyping pairPhone logout resetSession; do
+            if ! grep -q " $method(" /tmp/wagateway-client.txt; then
+              echo "::error::wagateway.Client is missing $method(); the AAR does not match go-wagateway/**"
+              missing=1
+            fi
+          done
+          exit $missing
 
       - name: Unit tests
         # Incremental compilation reuses a cached ABI snapshot of the binding; after the AAR is

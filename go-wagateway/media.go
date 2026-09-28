@@ -221,8 +221,8 @@ func (c *Client) SendVideo(target string, data []byte, mimetype string, caption 
 
 // DownloadMedia downloads and decrypts the attachment of a received media message.
 // mediaMessageProto is the marshalled waE2E.ImageMessage / AudioMessage /
-// VideoMessage / DocumentMessage (the INNER message, exactly what handleEvent
-// marshals) the Kotlin side received through OnMedia.
+// VideoMessage / DocumentMessage / StickerMessage (the INNER message, exactly what
+// handleEvent marshals) the Kotlin side received through OnMedia.
 func (c *Client) DownloadMedia(mediaMessageProto []byte) ([]byte, error) {
 	cli := c.cli
 	if cli == nil {
@@ -242,6 +242,18 @@ func (c *Client) DownloadMedia(mediaMessageProto []byte) ([]byte, error) {
 	// made every received photo/file fail with "no downloadable media found in
 	// payload". So unmarshal into each concrete inner type and accept the first one
 	// that actually carries download info (URL or MediaKey).
+	//
+	// Stickers are checked first and must report an image mimetype: StickerMessage shares
+	// field 1 (URL) with the other media types but numbers everything else differently, so a
+	// sticker payload also unmarshals into some of them as meaningless bytes. The mimetype
+	// guard is what keeps a real image/audio/video payload from ever being claimed here.
+	var sticker waE2E.StickerMessage
+	if err := proto.Unmarshal(mediaMessageProto, &sticker); err == nil &&
+		strings.HasPrefix(sticker.GetMimetype(), "image/") &&
+		(sticker.GetURL() != "" || len(sticker.GetMediaKey()) > 0) {
+		// whatsmeow maps StickerMessage to MediaImage, so animated stickers decrypt here too.
+		return cli.Download(ctx, &sticker)
+	}
 	var img waE2E.ImageMessage
 	if err := proto.Unmarshal(mediaMessageProto, &img); err == nil && (img.GetURL() != "" || len(img.GetMediaKey()) > 0) {
 		return cli.Download(ctx, &img)

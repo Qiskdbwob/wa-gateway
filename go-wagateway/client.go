@@ -134,6 +134,15 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 			}
 			return
 		}
+		// A sticker is an image (WebP, or WebP-based Lottie when animated) and downloads through
+		// the same image path, so it is forwarded as image media instead of disappearing.
+		if sticker := msg.GetStickerMessage(); sticker != nil {
+			if payload, err := proto.Marshal(sticker); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "image",
+					stickerMimetype(sticker), "", "", msgID, ts, payload)
+			}
+			return
+		}
 
 		var text string
 		if msg != nil {
@@ -167,11 +176,27 @@ func unwrapMessage(msg *waE2E.Message) *waE2E.Message {
 			msg = msg.GetEphemeralMessage().GetMessage()
 		case msg.GetDocumentWithCaptionMessage() != nil:
 			msg = msg.GetDocumentWithCaptionMessage().GetMessage()
+		// Animated (Lottie) and audio stickers arrive inside an envelope of their own; opening
+		// it is what lets the sticker branch below see the real StickerMessage.
+		case msg.GetLottieStickerMessage() != nil:
+			msg = msg.GetLottieStickerMessage().GetMessage()
+		case msg.GetAudioStickerMessage() != nil:
+			msg = msg.GetAudioStickerMessage().GetMessage()
 		default:
 			return msg
 		}
 	}
 	return msg
+}
+
+// stickerMimetype reports the container of a sticker, defaulting to WebP because that is what
+// WhatsApp always uses; a sticker without a mimetype would otherwise reach the vision provider
+// untyped.
+func stickerMimetype(sticker *waE2E.StickerMessage) string {
+	if mimetype := sticker.GetMimetype(); mimetype != "" {
+		return mimetype
+	}
+	return "image/webp"
 }
 
 // resolveJIDForRules maps a LID JID (...@lid) to the phone-number JID when the session
