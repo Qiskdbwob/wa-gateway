@@ -96,6 +96,43 @@ class WhatsAppChannelAdapterTest {
     }
 
     @Test
+    fun internalTurnsAreNotDeliveredToWhatsApp() = runTest {
+        val gateway = FakeGateway()
+        val adapter = WhatsAppChannelAdapter(gateway) { input ->
+            input.metadata["source"] == "scheduler"
+        }
+
+        val result = adapter.sendResponse(
+            input(mapOf(EDIT_TARGET_KEY to "ack-1", "source" to "scheduler")),
+            AgentResponse(content = "Pelajaran sudah dicatat ✅")
+        )
+
+        // The reflection report is bookkeeping: it must not reach the chat at all — neither as a
+        // new bubble nor as an edit of the "sedang berpikir" placeholder.
+        assertTrue(result.isSuccess)
+        assertTrue(gateway.sent.isEmpty())
+        assertTrue(gateway.edits.isEmpty())
+    }
+
+    @Test
+    fun aScheduledTaskTheUserAskedForIsStillDelivered() = runTest {
+        val gateway = FakeGateway()
+        // Same rule as the bridge: only the internal reflection task is suppressed.
+        val adapter = WhatsAppChannelAdapter(gateway) { input ->
+            input.metadata["scheduledTaskId"] == "sched-reflection"
+        }
+
+        val result = adapter.sendResponse(
+            input(mapOf("source" to "scheduler", "scheduledTaskId" to "sched-news")),
+            AgentResponse(content = "Berita pagi: ...")
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals(1, gateway.sent.size)
+        assertEquals("Berita pagi: ...", gateway.sent.first().second)
+    }
+
+    @Test
     fun blankResponseIsNeverSent() = runTest {
         val gateway = FakeGateway()
         val adapter = WhatsAppChannelAdapter(gateway)

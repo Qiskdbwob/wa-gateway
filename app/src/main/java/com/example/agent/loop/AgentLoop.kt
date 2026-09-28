@@ -69,6 +69,18 @@ val AgentState.isBusy: Boolean
  */
 private const val TOOL_OUTPUT_LIMIT = 20_000
 
+/** OpenAI-compatible marker for "the answer was cut off by the model's output limit". */
+private const val TRUNCATED_FINISH_REASON = "length"
+
+/** Extra model calls allowed to finish a length-capped answer (bounded, so one turn stays cheap). */
+private const val MAX_ANSWER_CONTINUATIONS = 2
+
+/** Nudge that finishes a length-capped answer without repeating what was already written. */
+private const val CONTINUATION_PROMPT =
+    "Jawaban tadi terpotong karena batas panjang keluaran model. Lanjutkan TEPAT dari kata " +
+        "terakhir yang sudah tertulis, tanpa mengulang kalimat sebelumnya dan tanpa pembuka. " +
+        "Bila sudah lengkap, akhiri dengan kalimat penutup yang wajar."
+
 class AgentLoop(
     var agent: Agent = Agent(),
     modelProvider: ModelProvider = EchoTestProvider(),
@@ -540,18 +552,51 @@ class AgentLoop(
                                 }
                             }
 
+                            // A model that runs out of output budget stops mid-sentence
+                            // (finish_reason=length). Delivered as is, that fragment is what makes
+                            // the agent look like it halted in the middle of a task, so the
+                            // remainder is requested and appended before the answer goes out.
+                            val answer = completeTruncatedAnswer(
+                                initial = modelResponse,
+                                activeHistory = activeHistory,
+                                sessionId = session.sessionId,
+                                emitProgress = emitProgress,
+                                generate = { history ->
+                                    target.provider.generate(
+                                        ModelRequest(
+                                            messages = history,
+                                            systemPrompt = systemPromptOverride ?: agent.systemPrompt,
+                                            modelId = requestModel,
+                                            tools = emptyList()
+                                        )
+                                    )
+                                },
+                                onContinuationCall = { call ->
+                                    recordModelCall(
+                                        ModelCallMetric(
+                                            provider = call.provider.ifBlank { target.provider.name },
+                                            model = call.model.ifBlank { requestModel },
+                                            latencyMs = call.latencyMs,
+                                            totalTokens = call.usage?.totalTokens ?: 0,
+                                            success = true,
+                                            detail = "target=${target.id}, phase=continuation"
+                                        )
+                                    )
+                                }
+                            )
+
                             // Model succeeded with non-empty content
                             if (modelAttempt > 1) {
                                 log("RETRY_COMPLETED", "target=${target.id}, attempt=$modelAttempt")
                             }
 
                             finalAgentResponse = AgentResponse(
-                                content = modelResponse.content,
-                                finishReason = modelResponse.finishReason,
+                                content = answer.content,
+                                finishReason = answer.finishReason,
                                 usage = modelResponse.usage,
                                 model = modelResponse.model,
                                 provider = modelResponse.provider,
-                                metadata = modelResponse.metadata
+                                metadata = modelResponse.metadata + answer.metadata
                             )
 
                             log(
@@ -691,6 +736,98 @@ class AgentLoop(
                 }
             }
         }
+    }
+
+    /** Final text of a turn plus how it ended, after any truncation recovery. */
+    private data class CompletedAnswer(
+        val content: String,
+        val finishReason: String?,
+        val metadata: Map<String, String> = emptyMap()
+    )
+
+    /**
+     * Finishes an answer the model cut off at its output limit.
+     *
+     * Most providers report that as `finish_reason = "length"`: the response is valid, it simply
+     * stops mid-sentence. Sending it as is is exactly the "agent berhenti di tengah tugas" the
+     * user sees — a bubble that ends with "Aku coba dari sumber langsung:" and nothing after it.
+     *
+     * So the assistant turn plus a short "continue" instruction are appended and the model is
+     * asked for the remainder, which is joined to what was already written. Bounded by
+     * [MAX_ANSWER_CONTINUATIONS]; if the answer is still cut off afterwards the text says so
+     * instead of silently ending in the middle.
+     */
+    private suspend fun completeTruncatedAnswer(
+        initial: ModelResponse,
+        activeHistory: List<AgentMessage>,
+        sessionId: String,
+        emitProgress: (String) -> Unit,
+        generate: suspend (List<AgentMessage>) -> Result<ModelResponse>,
+        onContinuationCall: (ModelResponse) -> Unit
+    ): CompletedAnswer {
+        if (initial.finishReason != TRUNCATED_FINISH_REASON || initial.content.isBlank()) {
+            return CompletedAnswer(initial.content, initial.finishReason)
+        }
+
+        var content = initial.content
+        var finishReason = initial.finishReason
+        var rounds = 0
+        var lastError: String? = null
+
+        while (finishReason == TRUNCATED_FINISH_REASON && rounds < MAX_ANSWER_CONTINUATIONS) {
+            rounds++
+            log("ANSWER_CONTINUATION", "Jawaban terpotong (batas panjang model); meminta lanjutan $rounds")
+            emitProgress("✂️ Jawaban terpotong, meminta lanjutannya...")
+            val history = activeHistory + listOf(
+                AgentMessage(
+                    id = "truncated-answer-$rounds",
+                    sessionId = sessionId,
+                    role = AgentRole.ASSISTANT,
+                    content = content,
+                    timestamp = System.currentTimeMillis()
+                ),
+                AgentMessage(
+                    id = "truncated-prompt-$rounds",
+                    sessionId = sessionId,
+                    role = AgentRole.USER,
+                    content = CONTINUATION_PROMPT,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+            val next = generate(history).getOrElse { e ->
+                lastError = e.message ?: e.javaClass.simpleName
+                null
+            } ?: break
+            onContinuationCall(next)
+            val piece = next.content.trim()
+            if (piece.isEmpty()) break
+            content = joinContinuation(content, piece)
+            finishReason = next.finishReason
+        }
+
+        if (finishReason == TRUNCATED_FINISH_REASON) {
+            // Honest instead of silently cut: the user is told the rest is missing.
+            log("ANSWER_CONTINUATION", "Lanjutan tetap terpotong: ${lastError ?: "batas panjang model"}")
+            content += "\n\n(…jawaban tetap terpotong karena batas panjang model" +
+                (lastError?.let { ": $it" } ?: "") + ")"
+        }
+        return CompletedAnswer(
+            content = content,
+            finishReason = finishReason,
+            metadata = mapOf("answerContinuations" to rounds.toString())
+        )
+    }
+
+    /**
+     * Glues a continuation to the text it continues. A model that stopped mid-sentence normally
+     * resumes mid-thought, so the pieces are joined with a single space unless one side already
+     * carries whitespace at the seam.
+     */
+    private fun joinContinuation(head: String, tail: String): String {
+        if (head.isEmpty()) return tail
+        if (tail.isEmpty()) return head
+        val cleanSeam = head.last().isWhitespace() || tail.first().isWhitespace()
+        return if (cleanSeam) head + tail else head + " " + tail
     }
 
     /**

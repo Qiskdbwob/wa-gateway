@@ -262,6 +262,11 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
   pesan error — tidak ada bubble "sedang berpikir" yang menggantung.
 * **Progres nyata**: retry, fallback, dan pemakaian tool dari Agent Loop mengedit bubble yang sama
   (mis. `↻ Mencoba ulang (2/2)...`, `🔧 Menggunakan tool: current_time...`).
+* **Jawaban terpotong dilanjutkan**: kalau provider menghentikan jawaban karena batas panjang
+  keluaran (`finish_reason = "length"`), Agent Loop meminta lanjutannya (maksimum 2 kali) dan
+  menyambungnya ke teks yang sudah ada. Kalau tetap terpotong, gelembungnya ditutup keterangan
+  jujur `(…jawaban tetap terpotong karena batas panjang model)` — bukan kalimat yang menggantung
+  seperti "Sepertinya akses pencarian web sedang tidak tersedia. Aku coba dari sumber langsung:".
 
 ---
 
@@ -339,11 +344,17 @@ pertama membuat record `approval_requests` (`appr-xxxxxxxx`, TTL 24 jam) dan mod
 tahu pengguna. Persetujuan datang lewat `/approve <id>` di chat atau tombol Setujui di Pengaturan —
 bukan dialog desktop yang tidak ada di WhatsApp. Satu request hanya bisa diputuskan sekali.
 
-**Scheduler.** `scheduled_tasks` menyimpan ekspresi `interval:<detik>` (minimum 60 detik,
-maksimum 30 hari) + prompt yang dijalankan berkala. Ticker 60 detik mengeksekusi task yang jatuh
-tempo lewat AgentLoop (jawabannya dikirim ke chat asal), mencatat `COMPLETED`/`FAILED` beserta
-hasil/errornya, dan **menentukan jadwal berikutnya sebelum eksekusi** supaya eksekusi lambat tidak
-memicu dobel. Tool `schedule_task` membuat task ini dari percakapan.
+**Scheduler.** `scheduled_tasks` menyimpan dua bentuk jadwal: `daily:HH:MM[,HH:MM...]` untuk jam
+pasti waktu perangkat (mis. `daily:06:00,20:00` = tiap hari 6 pagi dan 8 malam) dan
+`interval:<detik>` (minimum 60 detik, maksimum 30 hari) untuk jeda tetap. Ticker 60 detik
+mengeksekusi task yang jatuh tempo lewat AgentLoop (jawabannya dikirim ke chat asal), mencatat
+`COMPLETED`/`FAILED` beserta hasil/errornya, dan **menentukan jadwal berikutnya sebelum eksekusi**
+supaya eksekusi lambat tidak memicu dobel. `daily:` selalu dihitung dari jam dinding dan hasilnya
+selalu di masa depan, jadi interval 6 jam tidak lagi menggeser jadwal (21:15 → 03:15) dan slot yang
+terlewat saat HP mati berjalan sekali saja tanpa menggeser slot berikutnya. Tool `schedule_task`
+membuat task dari percakapan dan mengembalikan jadwal yang benar-benar tersimpan + waktu eksekusi
+berikutnya, jadi model tidak bisa "mengonfirmasi" jadwal yang tidak pernah dibuat (task yang gagal
+atau jadwalnya tidak valid dijawab sebagai kegagalan tool).
 
 **Subagent latar belakang.** `delegate_task` membuat record `agent_tasks` dan langsung
 mengembalikan id-nya — agent utama **tidak menunggu**, ia menjawab pengguna lebih dulu. Subagent
@@ -440,8 +451,10 @@ bukan error compile.
   (tool-nya langsung dicabut dari registry) atau dihapus.
 * **Refleksi otomatis**: toggle di Pengaturan → Memori. Saat aktif, bridge membuat satu task
   terjadwal (`interval:N jam`, default 6 jam, maksimum 24) yang meminta agent meninjau pekerjaan
-  terakhir dan menyimpan 0–2 pelajaran lewat `reflect`/`save_skill`. Hasilnya dikirim ke percakapan
-  terakhir seperti task terjadwal lain. "Tidak ada pelajaran baru" adalah jawaban yang sah.
+  terakhir dan menyimpan 0–2 pelajaran lewat `reflect`/`save_skill`. Hasilnya **tidak** dikirim ke
+  chat WhatsApp — refleksi adalah pekerjaan internal agent, jadi laporannya tinggal di tab Tugas
+  (baris task-nya, `lastResult`) dan kandidat pelajarannya di Memori → Learning; yang dikirim ke
+  chat hanya task yang Anda minta sendiri. "Tidak ada pelajaran baru" adalah jawaban yang sah.
 * **Scheduler + WorkManager**: ticker 60 detik tetap jalan saat aplikasi hidup; `SchedulerWorker`
   menambahkan wake-up periodik 15 menit dari sistem, jadi task yang jatuh tempo saat proses mati
   tetap dieksekusi tanpa menunggu aplikasi dibuka.

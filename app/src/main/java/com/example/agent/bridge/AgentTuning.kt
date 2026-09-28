@@ -13,7 +13,15 @@ internal const val MAX_MODEL_METRICS = 50
 internal const val MAX_AUTO_REFLECT_HOURS = 24
 internal const val DEFAULT_AUTO_REFLECT_HOURS = 6
 
-/** Scheduled task that performs the periodic self-review. */
+/**
+ * Scheduled task that performs the periodic self-review.
+ *
+ * The name is the task's identity: [isInternalScheduledTurn] uses it to keep the reflection
+ * private, so the report stays in the app (tab Tugas → the task row, plus Memori → Learning for
+ * the candidates it created) instead of arriving in the user's chat as "Pelajaran sudah dicatat"
+ * chatter. Closing the gate again means renaming this constant consistently — nothing else keys
+ * off the name.
+ */
 internal const val AUTO_REFLECT_TASK_NAME = "Auto reflection"
 
 /**

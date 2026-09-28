@@ -110,11 +110,23 @@ private const val MAX_WHITELIST_NOTICES = 200
 private const val MAX_INLINE_VIDEO_BYTES = 15 * 1024 * 1024
 
 class WhatsAppChannelAdapter(
-    private val gatewayManager: OutgoingMessageSender
+    private val gatewayManager: OutgoingMessageSender,
+    /**
+     * True when this turn is internal bookkeeping whose answer must stay in the app instead of
+     * being pushed into the user's chat. Defaults to "deliver everything".
+     */
+    private val suppressDelivery: suspend (AgentInput) -> Boolean = { false }
 ) : AgentChannelAdapter {
     override val channelName: String = "whatsapp"
 
     override suspend fun sendResponse(input: AgentInput, response: AgentResponse): Result<Unit> {
+        // The periodic self-review talks to itself: its report belongs in tab Tugas (lastResult)
+        // and its learning candidates in Memori → Learning, not in the user's chat as an
+        // unrequested "Pelajaran sudah dicatat" message. A user-created task is still delivered.
+        if (suppressDelivery(input)) {
+            return Result.success(Unit)
+        }
+
         if (response.content.isBlank()) {
             return Result.failure(IllegalArgumentException("Cannot send empty response to WhatsApp"))
         }
@@ -262,6 +274,21 @@ class WhatsAppAgentBridge private constructor(
         executeScheduledTask(task)
     })
 
+    /**
+     * True when the turn belongs to the periodic self-review.
+     *
+     * A scheduled task is delivered to WhatsApp only when the *user* asked for it; the reflection
+     * task is internal bookkeeping, so its answer is kept in the app (tab Tugas → the task row,
+     * plus Memori → Learning for the candidates it produced). The scheduler tags every scheduled
+     * turn with its task id, so the task name decides here — one rule, used by every channel.
+     */
+    private suspend fun isInternalScheduledTurn(input: AgentInput): Boolean {
+        if (input.metadata["source"] != "scheduler") return false
+        val taskId = input.metadata["scheduledTaskId"] ?: return false
+        val task = scheduledTaskDao.findById(taskId) ?: return false
+        return task.name == AUTO_REFLECT_TASK_NAME
+    }
+
     // --- Priority 6: subagents ---------------------------------------------------------
     private val agentTaskDao = AgentDatabase.getInstance(context).agentTaskDao()
     private val subAgentManager = SubAgentManager(
@@ -383,7 +410,9 @@ class WhatsAppAgentBridge private constructor(
 
     init {
         // Register WhatsApp outgoing channel adapter to the Agent Loop
-        agentLoop.registerChannelAdapter(WhatsAppChannelAdapter(gatewayManager))
+        agentLoop.registerChannelAdapter(
+            WhatsAppChannelAdapter(gatewayManager) { input -> isInternalScheduledTurn(input) }
+        )
         // Model-call metrics feed the Developer panel (numbers, not just log lines).
         agentLoop.onModelCall = { metric ->
             _modelMetrics.value = (listOf(metric) + _modelMetrics.value).take(MAX_MODEL_METRICS)
@@ -498,10 +527,11 @@ class WhatsAppAgentBridge private constructor(
         registry.register(
             CouncilTool { topic, conversationId -> runCouncil(topic, conversationId) }
         )
-        // Priority 4 — scheduler.
+        // Priority 4 — scheduler. The tool gets the stored row back (id + schedule + next run),
+        // so it can report the real schedule instead of a summary.
         registry.register(
             ScheduleTaskTool { name, schedule, prompt, conversationId ->
-                scheduler.create(name, schedule, prompt, conversationId).id
+                scheduler.create(name, schedule, prompt, conversationId)
             }
         )
         // Terminal tools — the agent can run curl/wget/bash/python, with per-command approval.

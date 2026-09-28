@@ -690,4 +690,88 @@ class AgentCoreTest {
         assertTrue(probe.latencyMs >= 0)
         assertEquals("probe-target", probe.targetId)
     }
+
+    // ==========================================
+    // TRUNCATED ANSWERS (agent looks like it stops mid-task)
+    // ==========================================
+
+    /**
+     * Provider that reports `finish_reason = length` for the first [truncatedCalls] answers, which
+     * is how an OpenAI-compatible endpoint says "I ran out of output budget".
+     */
+    private class TruncatingProvider(
+        private val truncatedCalls: Int,
+        private val first: String,
+        private val remainder: String
+    ) : ModelProvider {
+        override val id = "truncating"
+        override val name = "Truncating Provider"
+        var calls = 0
+            private set
+
+        override suspend fun generate(request: com.example.agent.model.ModelRequest): Result<com.example.agent.model.ModelResponse> {
+            calls++
+            val truncated = calls <= truncatedCalls
+            return Result.success(
+                com.example.agent.model.ModelResponse(
+                    content = if (calls == 1) first else remainder,
+                    finishReason = if (truncated) "length" else "stop",
+                    model = id,
+                    provider = name
+                )
+            )
+        }
+    }
+
+    @Test
+    fun truncatedAnswerIsContinuedInsteadOfBeingDeliveredHalfWritten() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        val provider = TruncatingProvider(
+            truncatedCalls = 1,
+            first = "Sepertinya akses pencarian web sedang tidak tersedia. Aku coba dari sumber langsung:",
+            remainder = "berikut tiga berita AI terbaru hari ini."
+        )
+        val loop = AgentLoop(agent = Agent(enabled = true), modelProvider = provider, sessionRepository = repo)
+
+        val res = loop.processMessage("conv-truncated", "kirim berita AI")
+
+        assertTrue(res.isSuccess)
+        val content = res.getOrThrow()
+        assertTrue(content.contains("Aku coba dari sumber langsung:"))
+        assertTrue(content.contains("berikut tiga berita AI terbaru hari ini."))
+        assertEquals(2, provider.calls)
+        assertTrue(loop.activityLogs.value.any { it.contains("ANSWER_CONTINUATION") })
+    }
+
+    @Test
+    fun answerSaysSoWhenEveryContinuationIsCutOffToo() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        val provider = TruncatingProvider(
+            truncatedCalls = 99,
+            first = "Laporan panjang yang terpotong",
+            remainder = "dan masih terpotong"
+        )
+        val loop = AgentLoop(agent = Agent(enabled = true), modelProvider = provider, sessionRepository = repo)
+
+        val content = loop.processMessage("conv-still-truncated", "tulis laporan").getOrThrow()
+
+        assertTrue(content.startsWith("Laporan panjang yang terpotong"))
+        assertTrue(content.contains("jawaban tetap terpotong"))
+        // Initial call plus the bounded number of continuations — never an unbounded loop.
+        assertEquals(3, provider.calls)
+    }
+
+    @Test
+    fun aCompleteAnswerIsNotRetriedAsATruncatedOne() = runBlocking {
+        val repo = InMemoryAgentSessionRepository()
+        val provider = TruncatingProvider(
+            truncatedCalls = 0,
+            first = "Jawaban lengkap.",
+            remainder = "(tidak dipakai)"
+        )
+        val loop = AgentLoop(agent = Agent(enabled = true), modelProvider = provider, sessionRepository = repo)
+
+        assertEquals("Jawaban lengkap.", loop.processMessage("conv-complete", "halo").getOrThrow())
+        assertEquals(1, provider.calls)
+    }
 }
