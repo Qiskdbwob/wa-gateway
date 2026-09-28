@@ -389,14 +389,17 @@ class Priority3To6AgentFeaturesTest {
     fun priority4_dailyTaskFiresOncePerSlotAndStoresTheFirstFutureSlot() = runBlocking {
         val dao = FakeScheduledTaskDao()
         val runs = mutableListOf<String>()
+        val zone = TimeZone.getTimeZone("Asia/Jakarta")
+        // The engine resolves "06:00" in the zone it was given, so the test pins it instead of
+        // depending on whatever time zone the machine running the tests happens to use.
         val engine = SchedulerEngine(
             dao,
             runTask = { task ->
                 runs.add(task.name)
                 "ok"
-            }
+            },
+            zone = zone
         )
-        val zone = TimeZone.getTimeZone("Asia/Jakarta")
 
         val created = engine.create("Berita pagi", "daily:6:0", "Ringkas berita", "628111")
         assertEquals("daily:06:00", created.schedule)

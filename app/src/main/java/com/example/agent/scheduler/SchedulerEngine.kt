@@ -39,6 +39,11 @@ import java.util.UUID
 class SchedulerEngine(
     private val dao: ScheduledTaskDao,
     private val runTask: suspend (task: ScheduledTaskEntity) -> String,
+    /**
+     * Zone used to resolve `daily:` times. Defaults to the device zone, which is what the user
+     * means by "jam 6 pagi"; injected so the tests and the engine agree on that meaning.
+     */
+    private val zone: TimeZone = TimeZone.getDefault(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
     @Volatile
@@ -53,7 +58,7 @@ class SchedulerEngine(
         agentId: String = "default-agent"
     ): ScheduledTaskEntity {
         val now = System.currentTimeMillis()
-        val firstRunAt = nextRunAt(schedule, now)
+        val firstRunAt = nextRunAt(schedule, now, zone)
             ?: throw IllegalArgumentException(String.format(Locale.US, INVALID_SCHEDULE_HELP, schedule))
         val task = ScheduledTaskEntity(
             id = "sched-" + UUID.randomUUID().toString().take(8),
@@ -76,7 +81,7 @@ class SchedulerEngine(
         dao.upsert(
             task.copy(
                 enabled = enabled,
-                nextRunAt = if (enabled) nextRunAt(task.schedule, now) else null
+                nextRunAt = if (enabled) nextRunAt(task.schedule, now, zone) else null
             )
         )
     }
@@ -105,7 +110,7 @@ class SchedulerEngine(
 
     private suspend fun executeOne(task: ScheduledTaskEntity, now: Long = System.currentTimeMillis()) {
         // Reserve the next slot first so a slow execution cannot cause double-fires.
-        val next = nextRunAt(task.schedule, now) ?: now + FALLBACK_INTERVAL_SECONDS * 1000L
+        val next = nextRunAt(task.schedule, now, zone) ?: now + FALLBACK_INTERVAL_SECONDS * 1000L
         dao.upsert(task.copy(nextRunAt = next))
         try {
             val result = runTask(task)
