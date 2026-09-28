@@ -66,10 +66,11 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US"
 
       # app/libs/wagateway.aar is rewritten at the same path on every build while the runner
-      # restores Gradle's cache. The AAR extract transform, the extracted jars and the build
-      # cache can all outlive the file they were computed from, and a stale extraction shows up
-      # as a method the Go binding does declare being reported as "unresolved reference".
-      # Dropping them makes the compiler see the AAR this run built.
+      # restores Gradle's cache. The AAR extract transform, the extracted jars and the build cache
+      # may outlive the file they were computed from, and that is the one explanation found so far
+      # for a method the Go binding does declare (and the step below confirms with javap) being
+      # reported as "unresolved reference" during compileDebugKotlin. Dropping them is cheap
+      # insurance: the compiler then sees the AAR this run built.
       - name: Drop cached AAR extraction
         run: |
           rm -rf "$HOME/.gradle/caches/transforms-"* || true
@@ -80,7 +81,8 @@ jobs:
       # Prints what the Kotlin compiler gets from the downloaded binding and fails fast when a
       # method the app calls is missing from the AAR. Without this the only symptom is a
       # confusing "unresolved reference" deep in compileDebugKotlin, which says nothing about
-      # whether the Kotlin source or the Go binding is at fault.
+      # whether the Kotlin source or the Go binding is at fault. Keep the list in sync with the
+      # methods WaGatewayManager calls.
       - name: Verify AAR binding
         run: |
           set -euo pipefail
@@ -102,28 +104,6 @@ jobs:
         # Incremental compilation reuses a cached ABI snapshot of the binding; after the AAR is
         # replaced that snapshot can hide methods that do exist in the new one.
         run: gradle testDebugUnitTest --no-daemon --stacktrace -Pkotlin.incremental=false --no-build-cache
-
-      # Kotlin once reported sendVideo as unresolved in the very same job whose javap output
-      # above lists it, which can only mean the compiler reads a different wagateway.Client than
-      # the one in app/libs. Resolution happens while the compile runs, so this probe has to come
-      # after it. Diagnostic only: it never fails the build.
-      - name: Debug where Kotlin reads wagateway.Client
-        if: always()
-        continue-on-error: true
-        run: |
-          set +e
-          echo "== every jar Gradle wrote recently that carries wagateway/Client.class =="
-          find "$HOME/.gradle" "$PWD/app/build" -name "*.jar" -newermt "-40 minutes" 2>/dev/null |
-            while read -r j; do
-              if unzip -l "$j" 2>/dev/null | grep -q "wagateway/Client.class"; then
-                echo "-- $j ($(sha256sum "$j" | cut -c1-16)) sendVideo=$(javap -classpath "$j" wagateway.Client 2>/dev/null | grep -c " sendVideo(")"
-              fi
-            done
-          echo "== paths that mention wagateway at all =="
-          find "$HOME/.gradle" "$PWD/app/build" /tmp -path "*wagateway*" 2>/dev/null | head -30
-          echo "== what debugCompileClasspath resolves =="
-          gradle :app:dependencies --configuration debugCompileClasspath --console=plain --no-daemon 2>&1 |
-            grep -i -B2 -A6 "wagateway\|FAILED\|What went wrong";
 
       # Gradle only prints failing tests, so summarise the XML reports to make the
       # evidence visible in the log: which test classes ran and how many passed.

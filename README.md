@@ -359,6 +359,14 @@ sebagai klip video, `audio/ogg` (Ogg/Opus) sebagai voice note, sisanya sebagai d
 `WaGatewayManager` (`sendImage`, `sendVideoMessage`, `sendAudio`, `sendDocument`). Batas ukuran
 16 MB (batas WhatsApp).
 
+Satu catatan teknis: `wagateway.Client.sendVideo` dipanggil lewat refleksi (lookup sekali, lihat
+`sendVideoMethod` di `WaGatewayManager`). AAR-nya memang mendeklarasikan method itu — workflow
+Build mencetaknya dengan `javap` dan gagal kalau hilang — tetapi compiler Kotlin melaporkan
+pemanggilan langsungnya sebagai *unresolved reference* sementara method lain di kelas yang sama
+resolusi normal. Dengan refleksi, video tetap dikirim sebagai video (bukan dokumen), dan kalau
+binding-nya benar-benar tidak punya method itu, kegagalannya muncul sebagai pesan kegagalan biasa,
+bukan error compile.
+
 ### Priority 9 — Terminal bawaan (agent bisa curl/wget/bash/python)
 
 * `run_command` menjalankan **satu perintah** lewat `/system/bin/sh` (shell + toybox bawaan
@@ -506,7 +514,9 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
 * Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
   dibaca langsung; stiker dibaca sebagai gambar; audio dicatat tetapi belum ditranskripsi (butuh
   provider STT). PDF/dokumen biner belum bisa dibaca (dijawab terus terang). Bila API key vision
-  belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
+  belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media. Kirim video keluar
+  memakai refleksi ke binding (`Client.sendVideo` tidak bisa dipanggil langsung dari Kotlin),
+  sehingga perilakunya belum bisa diuji di perangkat.
 * Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
   skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
   `web_search` (scrape **Bing** sebagai sumber default, **DuckDuckGo** sebagai fallback; parser
