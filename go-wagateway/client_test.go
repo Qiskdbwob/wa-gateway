@@ -33,8 +33,11 @@ func documentMessage() *waE2E.Message {
 	}
 }
 
+// wrapEphemeral builds the disappearing-messages envelope. WhatsApp wraps every envelope
+// with the same FutureProofMessage type (ephemeral, view once, document with caption),
+// which is why one helper covers them all.
 func wrapEphemeral(inner *waE2E.Message) *waE2E.Message {
-	return &waE2E.Message{EphemeralMessage: &waE2E.EphemeralMessage{Message: inner}}
+	return &waE2E.Message{EphemeralMessage: &waE2E.FutureProofMessage{Message: inner}}
 }
 
 // TestUnwrapMessageFindsInnerContent covers the envelopes that made messages look empty to
@@ -75,7 +78,7 @@ func TestUnwrapMessageFindsInnerContent(t *testing.T) {
 		{
 			name: "view once image",
 			wrapped: &waE2E.Message{
-				ViewOnceMessage: &waE2E.ViewOnceMessage{Message: imageMessage()},
+				ViewOnceMessage: &waE2E.FutureProofMessage{Message: imageMessage()},
 			},
 			check: func(t *testing.T, got *waE2E.Message) {
 				if got.GetImageMessage() == nil {
@@ -86,7 +89,7 @@ func TestUnwrapMessageFindsInnerContent(t *testing.T) {
 		{
 			name: "view once v2 image",
 			wrapped: &waE2E.Message{
-				ViewOnceMessageV2: &waE2E.ViewOnceMessageV2{Message: imageMessage()},
+				ViewOnceMessageV2: &waE2E.FutureProofMessage{Message: imageMessage()},
 			},
 			check: func(t *testing.T, got *waE2E.Message) {
 				if got.GetImageMessage() == nil {
@@ -97,7 +100,7 @@ func TestUnwrapMessageFindsInnerContent(t *testing.T) {
 		{
 			name: "view once v2 extension image",
 			wrapped: &waE2E.Message{
-				ViewOnceMessageV2Extension: &waE2E.ViewOnceMessageV2Extension{Message: imageMessage()},
+				ViewOnceMessageV2Extension: &waE2E.FutureProofMessage{Message: imageMessage()},
 			},
 			check: func(t *testing.T, got *waE2E.Message) {
 				if got.GetImageMessage() == nil {
@@ -108,7 +111,7 @@ func TestUnwrapMessageFindsInnerContent(t *testing.T) {
 		{
 			name: "document with caption",
 			wrapped: &waE2E.Message{
-				DocumentWithCaptionMessage: &waE2E.DocumentWithCaptionMessage{Message: documentMessage()},
+				DocumentWithCaptionMessage: &waE2E.FutureProofMessage{Message: documentMessage()},
 			},
 			check: func(t *testing.T, got *waE2E.Message) {
 				if got.GetDocumentMessage().GetFileName() != "laporan.pdf" {
