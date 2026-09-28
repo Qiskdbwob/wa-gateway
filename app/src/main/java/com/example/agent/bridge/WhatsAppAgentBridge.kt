@@ -624,7 +624,9 @@ class WhatsAppAgentBridge private constructor(
         // upload would lose that (and the SendAudio/SendVideo bindings would stay unusable).
         val result = when {
             mime.startsWith("image/") -> gatewayManager.sendImage(conversationId, bytes, mime, caption)
-            mime.startsWith("video/") -> gatewayManager.sendVideoMessage(conversationId, bytes, mime, caption)
+            // NOTE: videos go out as documents for now — see the unresolved-binding note in
+            // WaGatewayManager.sendVideoMessage.
+            mime.startsWith("video/") -> gatewayManager.sendDocument(conversationId, bytes, mime, file.name)
             mime.startsWith("audio/") ->
                 gatewayManager.sendAudio(conversationId, bytes, mime, voiceNote = mime == "audio/ogg")
             else -> gatewayManager.sendDocument(conversationId, bytes, mime, file.name)

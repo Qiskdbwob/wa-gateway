@@ -82,6 +82,14 @@ jobs:
           sha256sum app/libs/wagateway.aar
           unzip -p app/libs/wagateway.aar classes.jar > /tmp/wagateway-classes.jar
           javap -classpath /tmp/wagateway-classes.jar wagateway.Client
+          echo "== resolved debugCompileClasspath =="
+          gradle -q :app:dependencies --configuration debugCompileClasspath --no-daemon | grep -i wagateway || true
+          echo "== semua AAR wagateway di runner =="
+          find / -name "wagateway*.aar" -not -path "/proc/*" 2>/dev/null | head || true
+          echo "== semua Client.class wagateway =="
+          find / -path "*wagateway/Client.class" 2>/dev/null | head || true
+          echo "== isi app/libs =="
+          ls -la app/libs || true
 
       - name: Unit tests
         # Incremental compilation reuses a cached ABI snapshot of the binding; after the AAR is

@@ -286,7 +286,10 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
                 if (!gateway.isConnected) {
                     return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
                 }
-                val messageId = gateway.sendVideo(target, data, mimetype, caption)
+                // The gomobile binding method is not resolvable for the Kotlin compiler in CI
+                // even though the generated Client class declares it; videos are sent through
+                // sendDocument until that is understood.
+                val messageId = gateway.sendDocument(target, data, mimetype, "video.mp4")
                 addLog("Video sent to $target (${data.size} B)")
                 Result.success(messageId)
             } catch (e: Throwable) {
