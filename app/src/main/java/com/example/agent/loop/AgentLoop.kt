@@ -388,7 +388,7 @@ class AgentLoop(
                                 for (call in toolCalls) {
                                     _state.value = AgentState.WAITING_TOOL
                                     _currentActivity.value = "Menjalankan tool ${call.name}..."
-                                    emitProgress("🔧 Menggunakan tool: ${call.name}...")
+                                    emitProgress("> 🔧 Menggunakan tool: ${call.name}...")
 
                                     val tool = toolRegistry?.get(call.name)
                                     val toolStart = System.currentTimeMillis()
@@ -423,13 +423,13 @@ class AgentLoop(
                                     if (toolResult.error?.startsWith("PENDING_APPROVAL:") == true) {
                                         // Destructive call parked for human approval — keep the
                                         // turn alive so the model relays the request to the user.
-                                        emitProgress("🔐 Menunggu persetujuan untuk ${call.name}...")
+                                        emitProgress("> 🔐 Menunggu persetujuan untuk ${call.name}...")
                                     } else {
                                         emitProgress(
                                             if (toolResult.success) {
-                                                "🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
+                                                "> 🛠️ ${call.name} selesai (${toolLatencyMs}ms). Menyusun jawaban..."
                                             } else {
-                                                "🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
+                                                "> 🛠️ ${call.name} gagal: ${toolResult.error ?: "tanpa detail"}"
                                             }
                                         )
                                     }
@@ -494,7 +494,7 @@ class AgentLoop(
                                     _state.value = AgentState.RETRYING
                                     val backoff = classification.retryAfterMs ?: (effectiveRetryPolicy.initialBackoffMs * modelAttempt)
                                     log("MODEL_RETRY", "target=${target.id}, attempt=${modelAttempt + 1}, backoff=${backoff}ms, phase=tool-follow-up")
-                                    emitProgress("↻ Terjadi kendala saat memakai tool, mencoba ulang...")
+                                    emitProgress("> ↻ Terjadi kendala saat memakai tool, mencoba ulang...")
                                     delay(backoff)
                                     continue // retry on same model
                                 } else if (classification.canFallback) {

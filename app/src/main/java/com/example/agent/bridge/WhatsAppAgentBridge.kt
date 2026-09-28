@@ -1530,13 +1530,21 @@ class WhatsAppAgentBridge private constructor(
      * report that vision is not configured (no fake understanding).
      */
     private suspend fun analyzeMedia(media: WaMediaMessage): String = withContext(Dispatchers.IO) {
-        val data = try {
-            gatewayManager.downloadMedia(media.payload).getOrNull()
-        } catch (_: Exception) {
-            null
+        // The download result is kept so the failure reason reaches the user instead of a
+        // silent "(Gagal mengunduh media dari WhatsApp.)" with no way to tell what broke.
+        val download = try {
+            gatewayManager.downloadMedia(media.payload)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
+        val data = download.getOrNull()
         if (data == null) {
-            return@withContext "(Gagal mengunduh media dari WhatsApp.)"
+            val reason = download.exceptionOrNull()?.message ?: "penyebab tidak diketahui"
+            agentLoop.log(
+                "MEDIA_DOWNLOAD_FAILED",
+                "type=${media.mediaType}, mimetype=${media.mimetype}, error=$reason"
+            )
+            return@withContext "(Gagal mengunduh ${media.mediaType} dari WhatsApp: $reason. Coba kirim ulang file-nya.)"
         }
 
         // Documents: read as text directly (best effort, no vision needed).

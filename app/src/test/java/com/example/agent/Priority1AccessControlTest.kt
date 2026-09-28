@@ -163,4 +163,54 @@ class Priority1AccessControlTest {
         assertTrue(deleted.success)
         assertFalse(inside.exists())
     }
+
+    @Test
+    fun priority1_prefixAndLocalFormatEntriesStillMatchTheSender() {
+        val rules = listOf(
+            ContactRuleEntity.allow("62811"), // too short to be a prefix rule
+            ContactRuleEntity.allow("62812345"), // prefix of the international number
+            ContactRuleEntity.allow("081298765432"), // Indonesian local shape
+            ContactRuleEntity.block("62812345999"), // exact block beats a prefix allow
+        )
+
+        // The exact id always wins.
+        assertEquals("62812345", ContactAccessRepository.matchingRule(rules, "62812345")?.contactId)
+        // A saved prefix governs the full international number...
+        assertEquals("62812345", ContactAccessRepository.matchingRule(rules, "628123456789")?.contactId)
+        // ...an exact BLOCK beats a longer prefix ALLOW...
+        val blocked = ContactAccessRepository.matchingRule(rules, "62812345999")
+        assertEquals("62812345999", blocked?.contactId)
+        assertEquals(ContactRuleEntity.MODE_BLOCK, blocked?.mode)
+        // ...and an entry typed in local format still governs the 62-prefixed JID.
+        assertEquals(
+            "081298765432",
+            ContactAccessRepository.matchingRule(rules, "6281298765432")?.contactId
+        )
+        // Too-short entries never widen the gate by themselves.
+        assertNull(ContactAccessRepository.matchingRule(rules, "62811222333"))
+        assertNull(ContactAccessRepository.matchingRule(rules, ""))
+    }
+
+    @Test
+    fun priority1_prefixRulesDecideAccessLikeExactOnes() = runBlocking {
+        val dao = FakeContactRuleDao()
+        val repository = ContactAccessRepository(dao)
+
+        // The user whitelisted only the prefix ("my own numbers"); the sender uses any
+        // linked device of one of those numbers.
+        repository.allow("62812345", "keluarga")
+        assertEquals(
+            ContactAccessRepository.Decision.ALLOW,
+            repository.getDecision("628123456789", whitelistMode = true)
+        )
+        assertEquals(
+            ContactAccessRepository.Decision.ALLOW,
+            repository.getDecision("628123456789:44@s.whatsapp.net", whitelistMode = true)
+        )
+        // A number outside the prefix is still blocked by the whitelist mode.
+        assertEquals(
+            ContactAccessRepository.Decision.BLOCK,
+            repository.getDecision("628999999999", whitelistMode = true)
+        )
+    }
 }

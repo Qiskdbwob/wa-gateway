@@ -78,8 +78,8 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 			return
 		}
 
-		sender := evt.Info.Sender.ToNonAD().String()
-		chat := evt.Info.Chat.ToNonAD().String()
+		sender := c.resolveJIDForRules(evt.Info.Sender)
+		chat := c.resolveJIDForRules(evt.Info.Chat)
 		// Info.ID is forwarded so Kotlin can mark the message as read (centang biru)
 		// and, later on, edit it once the agent has produced a reply.
 		msgID := string(evt.Info.ID)
@@ -89,6 +89,10 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 		// as raw protobuf bytes; DownloadMedia(nil-bytes-not-required) unmarshals them
 		// again for the actual download. This keeps the boundary to simple types.
 		if evt.Message != nil && evt.Message.GetImageMessage() != nil {
+			// Marshal the INNER message types (ImageMessage, AudioMessage, ...), which
+			// DownloadMedia on the Kotlin side unmarshals back directly. Marshalling the
+			// outer Message here instead is what broke every photo/document analysis with
+			// "no downloadable media found in payload".
 			if payload, err := proto.Marshal(evt.Message.GetImageMessage()); err == nil {
 				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "image",
 					evt.Message.GetImageMessage().GetMimetype(),
@@ -142,6 +146,30 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 
 		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, msgID, ts)
 	}
+}
+
+// resolveJIDForRules maps a LID JID (...@lid) to the phone-number JID when the session
+// store knows the pair. Access rules and replies on the Kotlin side are keyed by phone
+// digits, and WhatsApp now delivers many direct chats with LIDs — without the mapping a
+// whitelisted contact could still arrive as an unknown @lid and be blocked. Unmapped LIDs
+// are returned unchanged so delivery keeps working.
+func (c *Client) resolveJIDForRules(jid types.JID) string {
+	if c.cli == nil || c.cli.Store == nil {
+		return jid.String()
+	}
+	jid = jid.ToNonAD()
+	// LID JIDs (hidden user + hosted) carry no phone digits usable by the Kotlin-side
+	// rule matching; map them back to the phone-number JID when the store knows the pair.
+	if jid.Server != types.HiddenUserServer && jid.Server != types.HostedLIDServer {
+		return jid.String()
+	}
+	if pn, err := c.cli.Store.LIDs.GetPNForLID(context.Background(), jid); err == nil && !pn.IsEmpty() {
+		pn = pn.ToNonAD()
+		if pn.Server != types.HiddenUserServer && pn.Server != types.HostedLIDServer {
+			return pn.String()
+		}
+	}
+	return jid.String()
 }
 
 // Connect establishes the connection to WhatsApp. If a linked session exists in the

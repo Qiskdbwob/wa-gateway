@@ -70,7 +70,7 @@ antar kontak tidak pernah tercampur.
 | `read_file` bertahap (`offset`/`limit` per baris, tanpa memotong tanpa jejak) | ✅ |
 | Probe model + panel token/latensi di Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
-| Kontrol akses kontak: whitelist & blacklist (per nomor, dinormalisasi dari JID) | ✅ |
+| Kontrol akses kontak: whitelist & blacklist (JID dinormalisasi; entri boleh prefix nomor atau format lokal 08xx; pengirim @lid dipetakan ke nomor) | ✅ |
 | Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
 | Pesan media masuk: gambar/video (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
 | Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (API siap; UI belum memakainya) |
@@ -184,7 +184,11 @@ membalas secara lokal tanpa jaringan.
 * Saat ini pesan grup diabaikan untuk mencegah agent mengirim ke grup tanpa konfigurasi.
 * **Whitelist mode**: bila diaktifkan (Pengaturan atau `/whitelist on`), hanya nomor yang terdaftar
   yang diproses; pesan lain di-drop sebelum masuk ke model dan dicatat sebagai `CONTACT_BLOCKED`.
-  Blacklist selalu menang atas whitelist.
+  Entri boleh nomor lengkap, **prefix nomor** (mis. `62812345` untuk seluruh nomor satu tasal;
+  minimal 7 digit), atau **format lokal 08xx** yang otomatis setara dengan bentuk `62…`. Chat dari
+  pengirim **@lid** (WhatsApp menyembunyikan nomor) dipetakan ke nomor teleponnya di gateway
+  (LID→PN whatsmeow), jadi kontak yang sudah di-whitelist tidak tiba-tiba terblokir. Blacklist
+  selalu menang atas whitelist.
 * Tool berkelas `CONFIRM` **tidak** pernah ditawarkan ke model selama approval dimatikan, dan saat
   approval aktif pemanggilannya **tidak langsung dieksekusi** — agent membuat request `appr-xxxxxxxx`
   dan menunggu `/approve <id>` atau `/reject <id>` (kedaluwarsa 24 jam, hanya bisa diputuskan sekali).
@@ -292,10 +296,14 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 
 **Kontrol akses kontak (prioritas keamanan).** `contact_rules` menyimpan whitelist/blacklist satu
 baris per nomor; `normalizePhone()` menyamakan semua bentuk JID (`@s.whatsapp.net`, `@c.us`, device
-suffix, `+`, spasi) sebelum dicocokkan. Saat whitelist mode aktif, hanya nomor terdaftar yang
+suffix, `+`, spasi) sebelum dicocokkan. Pencocokannya memakai `matchingRule()`: id persis lebih
+dulu, lalu entri **prefix** (≥7 digit) dan entri **format lokal 08xx** — dan aturan BLOCK selalu
+menang bila dua entri cocok dengan nomor yang sama. Saat whitelist mode aktif, hanya nomor terdaftar
+yang
 lolos — pengecekan terjadi **sebelum** agent membaca pesan, jadi pesan yang diblokir tidak pernah
-masuk history maupun memori. Pesan grup tetap diabaikan. Bisa dikelola dari Pengaturan atau lewat
-`/whitelist` dan `/blacklist`.
+masuk history maupun memori. Pengirim dengan JID **@lid** dipetakan ke nomor telepon di sisi Go
+(`resolveJIDForRules`, memakai LIDStore whatsmeow) sebelum aturan dievaluasi. Pesan grup tetap
+diabaikan. Bisa dikelola dari Pengaturan atau lewat `/whitelist` dan `/blacklist`.
 
 **Memori jangka panjang.** Tiga lapisan dalam satu tabel `memory_items`: `EPISODIC` (ringkasan
 compact & peristiwa penting), `KNOWLEDGE` (fakta yang diminta diingat), `LEARNING` (pelajaran dari
@@ -486,7 +494,8 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
   belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
 * Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
   skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
-  `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
+  `web_search` (scrape **Bing** sebagai sumber default, **DuckDuckGo** sebagai fallback; parser
+  diuji unit di `WebSearchScrapeTest`), `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
   `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,

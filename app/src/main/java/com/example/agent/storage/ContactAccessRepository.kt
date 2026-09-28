@@ -24,15 +24,18 @@ class ContactAccessRepository(private val dao: ContactRuleDao) {
     data class AccessCheck(val decision: Decision, val rule: ContactRuleEntity?)
 
     suspend fun getDecision(contactId: String, whitelistMode: Boolean): Decision {
-        val rule = dao.findByContactId(normalizePhone(contactId))
+        val rule = findRule(contactId)
         return ContactAccessPolicy.decide(rule?.mode, whitelistMode)
     }
 
     suspend fun getAccess(contactId: String, whitelistMode: Boolean): AccessCheck =
         AccessCheck(
             decision = getDecision(contactId, whitelistMode),
-            rule = dao.findByContactId(normalizePhone(contactId))
+            rule = findRule(contactId)
         )
+
+    private suspend fun findRule(contactId: String): ContactRuleEntity? =
+        matchingRule(dao.getAll(), contactId)
 
     suspend fun allow(contactId: String, label: String? = null) =
         dao.upsert(ContactRuleEntity.allow(normalizePhone(contactId), label))
@@ -52,10 +55,40 @@ class ContactAccessRepository(private val dao: ContactRuleDao) {
     fun blacklistFlow(): Flow<List<ContactRuleEntity>> = dao.getByModeFlow(ContactRuleEntity.MODE_BLOCK)
 
     companion object {
+        /** A prefix rule shorter than this would open the gate to too many numbers by accident. */
+        const val MIN_PREFIX_DIGITS = 7
+
+        /**
+         * The rule that governs [contactId]. Exact id wins; after that WhatsApp-side failures
+         * are covered: a rule saved as a shorter prefix of the international number, or an
+         * entry typed in the Indonesian local shape ("0812…" for "62812…"). Among several
+         * matches a BLOCK rule always beats an ALLOW/PENDING rule, and the most specific
+         * (longest) entry wins inside the same mode.
+         */
+        fun matchingRule(rules: List<ContactRuleEntity>, contactId: String): ContactRuleEntity? {
+            rules.firstOrNull { it.contactId == contactId }?.let { return it }
+            val cleaned = contactId.trim()
+            if (cleaned.isEmpty()) return null
+            val matched = rules.filter { ruleMatchesContact(it.contactId, cleaned) }
+            if (matched.isEmpty()) return null
+            return matched.minWithOrNull(
+                compareBy<ContactRuleEntity> { it.mode != ContactRuleEntity.MODE_BLOCK }
+                    .thenByDescending { it.contactId.length }
+            )
+        }
+
+        private fun ruleMatchesContact(ruleId: String, contactId: String): Boolean {
+            if (ruleId.length < MIN_PREFIX_DIGITS) return false
+            if (contactId.startsWith(ruleId)) return true
+            // Indonesian local format: an entry typed "08123456789" describes the same line
+            // as the international JID digits "628123456789" (leading 0 becomes 62).
+            return ruleId.startsWith("0") && contactId.startsWith("62${ruleId.drop(1)}")
+        }
+
         /**
          * Normalizes any WhatsApp identifier to bare digits: JID suffixes (`@s.whatsapp.net`,
-         * `@c.us`, `@g.us`), device suffixes (`.0:12@...`), `+`, spaces and dashes are all
-         * stripped. Groups (ending `@g.us`) are returned unchanged so they can be
+         * `@c.us`, `@g.us`, `@lid`), device suffixes (`.0:12@...`), `+`, spaces and dashes are
+         * all stripped. Groups (ending `@g.us`) are returned unchanged so they can be
          * whitelisted/blocked as whole chats.
          */
         fun normalizePhone(raw: String): String {

@@ -18,13 +18,17 @@ import java.io.IOException
  * the model, which can retry with different arguments or answer without the tool.
  */
 
-/** DuckDuckGo Instant Answer API search + HTML fallback snippet extraction. */
+/**
+ * Web search by scraping: Bing first (the default source), DuckDuckGo as the fallback when
+ * Bing is unreachable or returns nothing usable. The parsers live in [WebSearchScrape] so
+ * they are unit-testable against captured HTML without network or Robolectric.
+ */
 class WebSearchTool : Tool {
 
     override val id: String = "builtin.web_search"
     override val name: String = "web_search"
     override val description: String =
-        "Mencari informasi di internet. Gunakan untuk fakta terkini, berita, harga, atau hal di luar pengetahuan Anda. Kembalikan judul, URL, dan cuplikan."
+        "Mencari informasi di internet (Bing, fallback DuckDuckGo). Gunakan untuk fakta terkini, berita, harga, atau hal di luar pengetahuan Anda. Kembalikan judul, URL, dan cuplikan."
     override val inputSchema: String = """
         {
           "type": "object",
@@ -50,18 +54,23 @@ class WebSearchTool : Tool {
             ToolResult(success = false, output = "", error = "Argumen 'query' wajib diisi.")
         } else {
             val maxResults = (JsonArgs.int(input, "max_results") ?: 5).coerceIn(1, 8)
-            val results = searchDuckDuckGo(query, maxResults)
+            val results = search(query, maxResults)
             if (results.isEmpty()) {
                 ToolResult(success = true, output = "Tidak ada hasil untuk \"$query\".")
             } else {
+                val source = results.first().source
                 val body = results
                     .take(maxResults)
                     .mapIndexed { i, r -> "${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}" }
                     .joinToString("\n\n")
                 ToolResult(
                     success = true,
-                    output = "Hasil pencarian \"$query\":\n\n$body",
-                    metadata = mapOf("count" to results.size.toString(), "query" to query)
+                    output = "Hasil pencarian \"$query\" (sumber: $source):\n\n$body",
+                    metadata = mapOf(
+                        "count" to results.size.toString(),
+                        "query" to query,
+                        "source" to source
+                    )
                 )
             }
         }
@@ -69,35 +78,28 @@ class WebSearchTool : Tool {
         ToolResult(success = false, output = "", error = "web_search gagal: ${e.message ?: e.javaClass.simpleName}")
     }
 
-    private data class Hit(val title: String, val url: String, val snippet: String)
+    private data class Hit(val title: String, val url: String, val snippet: String, val source: String)
 
-    private fun searchDuckDuckGo(query: String, maxResults: Int): List<Hit> {
+    /**
+     * Bing first; DuckDuckGo only when Bing throws or yields nothing usable, so one angry
+     * anti-bot page cannot make the tool report a failure to the model.
+     */
+    private fun search(query: String, maxResults: Int): List<Hit> {
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val html = httpGet("https://html.duckduckgo.com/html/?q=$encoded")
-        val hits = mutableListOf<Hit>()
-
-        // Result links look like:
-        // <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com...">
-        // Escaped (not raw) string on purpose: the pattern itself ends with a quote, which
-        // would be ambiguous to read inside a raw string literal.
-        val linkRegex = Regex("class=\"result__a\"[^>]*href=\"([^\"]+)\"")
-        val snippetRegex = Regex("""class="result__snippet"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
-        val titleRegex = Regex("""class="result__a"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
-
-        val links = linkRegex.findAll(html).toList()
-        val titles = titleRegex.findAll(html).toList()
-        val snippets = snippetRegex.findAll(html).toList()
-
-        for (i in links.indices) {
-            val rawUrl = links[i].groupValues[1]
-            val url = decodeDuckUrl(rawUrl) ?: continue
-            if (url.startsWith("https://duckduckgo.com") || url.startsWith("http://duckduckgo.com")) continue
-            val title = titles.getOrNull(i)?.groupValues?.get(1)?.let(::stripHtml)?.take(160) ?: url
-            val snippet = snippets.getOrNull(i)?.groupValues?.get(1)?.let(::stripHtml)?.take(300) ?: ""
-            hits.add(Hit(title, url, snippet))
-            if (hits.size >= maxResults) break
+        val bing = try {
+            WebSearchScrape.parseBing(
+                httpGet("https://www.bing.com/search?q=$encoded&count=$maxResults")
+            )
+        } catch (_: Exception) {
+            emptyList()
         }
-        return hits
+        if (bing.isNotEmpty()) {
+            return bing.take(maxResults).map { Hit(it.first, it.second, it.third, "bing") }
+        }
+        val duck = WebSearchScrape.parseDuckDuckGo(
+            httpGet("https://html.duckduckgo.com/html/?q=$encoded")
+        )
+        return duck.take(maxResults).map { Hit(it.first, it.second, it.third, "duckduckgo") }
     }
 
     /**
@@ -130,6 +132,61 @@ class WebSearchTool : Tool {
         }
     }
 
+    private companion object {
+        const val MAX_BYTES = 512 * 1024
+        const val USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
+    }
+}
+
+/**
+ * Pure HTML parsing for [WebSearchTool]: Bing (the default source) and the DuckDuckGo HTML
+ * endpoint (the fallback). Each hit is (title, url, snippet) — no network, no Android, so
+ * the regexes are tested against captured pages instead of "works today".
+ */
+object WebSearchScrape {
+
+    /** Bing result rows; empty when the markup changes or a consent page is served. */
+    fun parseBing(html: String): List<Triple<String, String, String>> =
+        Regex("""<li class="b_algo".*?</li>""", RegexOption.DOT_MATCHES_ALL)
+            .findAll(html)
+            .mapNotNull { block ->
+                val link = Regex(
+                    """<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>""",
+                    RegexOption.DOT_MATCHES_ALL
+                ).find(block.value) ?: return@mapNotNull null
+                val url = link.groupValues[1].replace("&amp;", "&").trim()
+                if (!url.startsWith("http")) return@mapNotNull null
+                val title = stripHtml(link.groupValues[2]).take(160).ifBlank { url }
+                val snippet = Regex("""<p[^>]*>(.*?)</p>""", RegexOption.DOT_MATCHES_ALL)
+                    .find(block.value)?.groupValues?.get(1)
+                    ?.let(::stripHtml)?.take(300).orEmpty()
+                Triple(title, url, snippet)
+            }
+            .toList()
+
+    /** DuckDuckGo HTML endpoint rows (the fallback source). */
+    fun parseDuckDuckGo(html: String): List<Triple<String, String, String>> {
+        val linkRegex = Regex("class=\"result__a\"[^>]*href=\"([^\"]+)\"")
+        val titleRegex = Regex("""class="result__a"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+        val snippetRegex = Regex("""class="result__snippet"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+
+        val links = linkRegex.findAll(html).toList()
+        val titles = titleRegex.findAll(html).toList()
+        val snippets = snippetRegex.findAll(html).toList()
+
+        val hits = mutableListOf<Triple<String, String, String>>()
+        for (i in links.indices) {
+            val rawUrl = links[i].groupValues[1]
+            val url = decodeDuckUrl(rawUrl) ?: continue
+            if (url.startsWith("https://duckduckgo.com") || url.startsWith("http://duckduckgo.com")) continue
+            val title = titles.getOrNull(i)?.groupValues?.get(1)?.let(::stripHtml)?.take(160) ?: url
+            val snippet = snippets.getOrNull(i)?.groupValues?.get(1)?.let(::stripHtml)?.take(300) ?: ""
+            hits.add(Triple(title, url, snippet))
+        }
+        return hits
+    }
+
     private fun decodeDuckUrl(raw: String): String? {
         val decoded = if (raw.contains("uddg=")) {
             val start = raw.indexOf("uddg=") + 5
@@ -141,7 +198,8 @@ class WebSearchTool : Tool {
         return if (decoded.startsWith("http")) decoded else null
     }
 
-    private fun stripHtml(text: String): String =
+    /** Strips tags, unescapes the common entities and squeezes whitespace. */
+    fun stripHtml(text: String): String =
         text.replace(Regex("<[^>]+>"), "")
             .replace("&amp;", "&")
             .replace("&lt;", "<")
@@ -152,12 +210,6 @@ class WebSearchTool : Tool {
             .replace("&nbsp;", " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-
-    private companion object {
-        const val MAX_BYTES = 512 * 1024
-        const val USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36"
-    }
 }
 
 /** Fetches a web page and returns readable text (HTML stripped, size-capped). */
