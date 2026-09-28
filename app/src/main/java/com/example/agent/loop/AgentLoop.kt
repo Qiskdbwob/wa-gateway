@@ -7,6 +7,7 @@ import com.example.agent.model.AgentMessage
 import com.example.agent.model.AgentResponse
 import com.example.agent.model.AgentRole
 import com.example.agent.model.ModelRequest
+import com.example.agent.model.ModelResponse
 import com.example.agent.model.ToolResult
 import com.example.agent.provider.EchoTestProvider
 import com.example.agent.provider.ModelProvider
@@ -794,10 +795,13 @@ class AgentLoop(
                     timestamp = System.currentTimeMillis()
                 )
             )
-            val next = generate(history).getOrElse { e ->
-                lastError = e.message ?: e.javaClass.simpleName
-                null
-            } ?: break
+            val nextResult = generate(history)
+            if (nextResult.isFailure) {
+                val error = nextResult.exceptionOrNull()
+                lastError = error?.message ?: error?.javaClass?.simpleName
+                break
+            }
+            val next = nextResult.getOrThrow()
             onContinuationCall(next)
             val piece = next.content.trim()
             if (piece.isEmpty()) break
