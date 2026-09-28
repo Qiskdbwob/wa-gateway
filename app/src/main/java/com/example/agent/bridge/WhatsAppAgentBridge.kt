@@ -574,8 +574,13 @@ class WhatsAppAgentBridge private constructor(
         "pdf" -> "application/pdf"
         "txt", "md", "log", "json", "csv" -> "text/plain"
         "zip" -> "application/zip"
-        "mp3", "ogg", "m4a", "opus" -> "audio/mpeg"
+        "mp3" -> "audio/mpeg"
+        // WhatsApp voice notes are Ogg/Opus; the container is what the client checks.
+        "ogg", "opus" -> "audio/ogg"
+        "m4a" -> "audio/mp4"
         "mp4" -> "video/mp4"
+        "webm" -> "video/webm"
+        "mov" -> "video/quicktime"
         else -> "application/octet-stream"
     }
 
@@ -614,10 +619,15 @@ class WhatsAppAgentBridge private constructor(
             )
         }
         val mime = guessMimeType(file.name)
-        val result = if (mime.startsWith("image/")) {
-            gatewayManager.sendImage(conversationId, bytes, mime, caption)
-        } else {
-            gatewayManager.sendDocument(conversationId, bytes, mime, file.name)
+        // Route by media type: WhatsApp only renders a playable video clip or an Ogg/Opus
+        // voice note when the file arrives through the matching API, so a generic document
+        // upload would lose that (and the SendAudio/SendVideo bindings would stay unusable).
+        val result = when {
+            mime.startsWith("image/") -> gatewayManager.sendImage(conversationId, bytes, mime, caption)
+            mime.startsWith("video/") -> gatewayManager.sendVideo(conversationId, bytes, mime, caption)
+            mime.startsWith("audio/") ->
+                gatewayManager.sendAudio(conversationId, bytes, mime, voiceNote = mime == "audio/ogg")
+            else -> gatewayManager.sendDocument(conversationId, bytes, mime, file.name)
         }
         return if (result.isSuccess) {
             ToolResult(
@@ -1080,19 +1090,44 @@ class WhatsAppAgentBridge private constructor(
         return instanceFor(active) to active.modelId
     }
 
-    private fun visionProvider(): VisionProvider? {
+    /** The vision provider to use plus the model id that belongs to it. */
+    private data class VisionTarget(val provider: VisionProvider, val modelId: String)
+
+    /**
+     * Picks who reads the incoming media. A dedicated vision key wins; without one the active
+     * chat provider is reused, so a photo is understood out of the box whenever that provider
+     * can see images. The model id has to travel with the provider (the vision default and the
+     * chat default are different names), which is why both are returned together.
+     */
+    private fun visionTarget(): VisionTarget? {
         val config = _visionConfig.value
-        return if (config.apiKey.isBlank()) {
-            null
-        } else if (config.isGeminiNative) {
-            GeminiVisionProvider(apiKey = config.apiKey, defaultModel = config.modelId)
+        if (config.apiKey.isNotBlank()) {
+            val provider = if (config.isGeminiNative) {
+                GeminiVisionProvider(apiKey = config.apiKey, defaultModel = config.modelId)
+            } else {
+                OpenAiVisionProvider(
+                    baseUrl = config.baseUrl,
+                    apiKey = config.apiKey,
+                    defaultModel = config.modelId
+                )
+            }
+            return VisionTarget(provider, config.modelId)
+        }
+
+        val active = providerConfig.value
+        if (active.apiKey.isBlank() || active.baseUrl.isBlank()) return null
+        val geminiNative = active.baseUrl.contains("generativelanguage.googleapis.com") &&
+            !active.baseUrl.contains("/openai")
+        val provider = if (geminiNative) {
+            GeminiVisionProvider(apiKey = active.apiKey, defaultModel = active.modelId)
         } else {
             OpenAiVisionProvider(
-                baseUrl = config.baseUrl,
-                apiKey = config.apiKey,
-                defaultModel = config.modelId
+                baseUrl = active.baseUrl,
+                apiKey = active.apiKey,
+                defaultModel = active.modelId
             )
         }
+        return VisionTarget(provider, active.modelId)
     }
 
     private fun persistConfig() {
@@ -1627,8 +1662,9 @@ class WhatsAppAgentBridge private constructor(
 
         // Vision runs on the bytes downloaded above; video is sent inline (base64), which is
         // why the size gate above already refused anything too large to send.
-        val provider = visionProvider()
-            ?: return@withContext "(Belum ada model vision dikonfigurasi. Isi API key vision di Pengaturan agar saya bisa melihat ${effectiveType}.)"
+        val target = visionTarget()
+            ?: return@withContext "(Belum ada model yang bisa melihat ${effectiveType} ini. Isi API key " +
+                "vision di Pengaturan, atau pakai provider utama yang modelnya mendukung gambar.)"
 
         val prompt = if (media.caption.isNotBlank()) {
             "Jelaskan ${effectiveType} ini secara ringkas dan jawab kebutuhan pengguna. Caption pengguna: \"${media.caption}\""
@@ -1638,12 +1674,12 @@ class WhatsAppAgentBridge private constructor(
 
         try {
             withTimeout(90_000L) {
-                provider.describeImage(
+                target.provider.describeImage(
                     com.example.agent.provider.ImageUnderstandingRequest(
                         prompt = prompt,
                         imagesBase64 = listOf(Base64.encodeToString(data, Base64.NO_WRAP)),
                         mimeType = media.mimetype.ifBlank { "image/jpeg" },
-                        modelId = _visionConfig.value.modelId
+                        modelId = target.modelId
                     )
                 ).getOrElse { e ->
                     "(Analisis ${effectiveType} gagal: ${e.message})"

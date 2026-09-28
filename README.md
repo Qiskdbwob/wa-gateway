@@ -73,7 +73,7 @@ antar kontak tidak pernah tercampur.
 | Kontrol akses kontak: whitelist & blacklist (JID dinormalisasi; entri boleh prefix nomor atau format lokal 08xx; pengirim @lid dipetakan ke nomor) | ✅ |
 | Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
 | Pesan media masuk: gambar/video (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
-| Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (API siap; UI belum memakainya) |
+| Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (lewat tool `send_file_to_chat`; tombol kirim manual di UI belum ada) |
 | Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
 | Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
 | Permission tool (SAFE / AUTO_SAFE / CONFIRM) + approval destruktif via chat & UI | ✅ |
@@ -136,7 +136,7 @@ gradle assembleOptimized     # APK rilis-grade: R8 + resource shrinking, non-deb
 
 | Workflow | Job | Trigger | Hasil |
 |---|---|---|---|
-| `build.yml` | `gateway-aar` | semua push/PR | `wagateway.aar` (artifact) — memanggil workflow reusable `gateway-aar.yml` |
+| `build.yml` | `gateway-aar` | semua push/PR | `go build` + `go test` lalu `wagateway.aar` (artifact) — memanggil workflow reusable `gateway-aar.yml` |
 | `build.yml` | `android` | butuh `gateway-aar` | unit test + `wagateway-debug-apk` |
 | `build.yml` | `release` | hanya tag `v*` | APK & AAB **bertanda tangan** + GitHub Release |
 | `optimized-apk.yml` | `optimized` | manual, push ke `main`, atau PR yang menyentuh keep-rules R8 / build config | **`wagateway-optimized-apk`** + laporan R8 |
@@ -352,8 +352,10 @@ video bulat) — tanpa ini chat tersebut tampak kosong. Gambar/video dianalisis 
 foto/video yang dikirim sebagai file diarahkan lewat MIME-nya supaya tetap dianalisis. Video besar
 (>15 MB) ditolak dengan alasan jelas karena bytes-nya dikirim inline (base64). Hasilnya digabung ke
 prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
-Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersedia di
-`WaGatewayManager`.
+**Media keluar.** Tool `send_file_to_chat` mengirim file workspace atas inisiatif model, dan
+routing-nya mengikuti MIME: `image/*` sebagai foto, `video/*` sebagai klip, `audio/ogg` (Ogg/Opus)
+sebagai voice note, sisanya sebagai dokumen — lewat `WaGatewayManager` (`sendImage`, `sendVideo`,
+`sendAudio`, `sendDocument`). Batas ukuran 16 MB (batas WhatsApp).
 
 ### Priority 9 — Terminal bawaan (agent bisa curl/wget/bash/python)
 
@@ -452,7 +454,9 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
 * Kunci disimpan terenkripsi (`SecretCipher`), satu blob per provider. Install lama yang masih
   single-provider otomatis dibuatkan satu baris pertama dari konfigurasinya saat aplikasi dibuka,
   jadi tidak ada yang perlu diisi ulang.
-* Vision (analisis media) masih punya konfigurasi terpisah di bagian **Vision** — belum ikut daftar ini.
+* Vision punya konfigurasi sendiri di bagian **Vision**, tetapi **tidak wajib diisi**: kalau
+  kunci vision kosong, media masuk dibaca memakai provider utama yang sedang aktif (berguna
+  kalau modelnya sudah multimodal, mis. `gpt-4o` atau Gemini).
 
 ### Unified search (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
   chat, memori jangka panjang, task terjadwal & sub-agent, file workspace, dan daftar tool. Ranking

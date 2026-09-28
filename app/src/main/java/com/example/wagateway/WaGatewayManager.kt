@@ -277,6 +277,23 @@ class WaGatewayManager private constructor(context: Context) : WaEventListener, 
             }
         }
 
+    /** Sends a video clip. Returns the message ID. */
+    suspend fun sendVideo(target: String, data: ByteArray, mimetype: String, caption: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            try {
+                val c = client ?: return@withContext Result.failure(IllegalStateException("Gateway not initialized"))
+                if (!c.isConnected) {
+                    return@withContext Result.failure(IllegalStateException("Gateway is not connected to WhatsApp"))
+                }
+                val messageId = c.sendVideo(target, data, mimetype, caption)
+                addLog("Video sent to $target (${data.size} B)")
+                Result.success(messageId)
+            } catch (e: Throwable) {
+                addLog("Failed to send video: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
     /**
      * Downloads and decrypts a received media payload (the bytes delivered to
      * [IncomingMediaListener]). Returns the raw file bytes.
