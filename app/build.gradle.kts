@@ -89,6 +89,33 @@ android {
   }
 }
 
+// AGP only takes the classes out of a local `.aar` file dependency: the native libraries under
+// `jni/<abi>/` never reach the APK. The result is an app that installs and runs but whose
+// WhatsApp gateway dies on the first call with UnsatisfiedLinkError ("libgojni.so not found") —
+// an 18 MB debug APK is exactly what that looks like, because the .so alone is ~26 MB per ABI.
+//
+// `libs/wagateway-jni/jni` is the AAR's own jni/ directory, unpacked next to it (see
+// app/libs/README.md and the "Unpack the AAR native libs" step in .github/workflows/build.yml),
+// and registered here so the .so files are packaged:
+//
+//   unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
+//
+// A missing jniLibs directory is only a problem when the AAR is present, which the guard below
+// turns into a readable message instead of an APK that fails on the device.
+android.sourceSets.getByName("main").jniLibs.srcDir("libs/wagateway-jni/jni")
+
+tasks.matching { it.name.contains("NativeLibs") }.configureEach {
+  doFirst {
+    if (file("libs/wagateway.aar").isFile && !file("libs/wagateway-jni/jni").isDirectory) {
+      throw GradleException(
+        "app/libs/wagateway.aar is there but its native libraries were never unpacked, so the " +
+          "APK would ship without libgojni.so. Run:\n" +
+          "  unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni"
+      )
+    }
+  }
+}
+
 // Some unused dependencies are kept commented out below instead of being removed,
 // so they can be added back easily when the feature that needs them is built.
 dependencies {

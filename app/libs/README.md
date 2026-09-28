@@ -19,6 +19,23 @@ gomobile bind -target=android/arm64,android/amd64,android/arm -androidapi 24 \
 implementation(files("libs/wagateway.aar"))
 ```
 
+### The `.aar` is not enough on its own: unpack its `jni/` too
+
+A local `.aar` given to Gradle as a file dependency only contributes `classes.jar`. Its
+`jni/<abi>/libgojni.so` is silently ignored, which produces an APK that installs and runs but
+whose gateway dies on the first call with `UnsatisfiedLinkError: libgojni.so not found` — and an
+APK that is far smaller than it should be (the `.so` is ~26 MB per ABI). The native libraries
+must therefore be unpacked next to the AAR:
+
+```bash
+unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
+```
+
+`app/build.gradle.kts` registers `libs/wagateway-jni/jni` as a `jniLibs` source directory and
+fails the build with a readable message when the AAR is present but was never unpacked. CI does
+the same unpack step before Gradle runs and verifies afterwards that the built APK really
+contains `lib/<abi>/libgojni.so`.
+
 ### Building locally
 
 1. Install Go 1.26+, the Android SDK/NDK and gomobile:

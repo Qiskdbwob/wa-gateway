@@ -121,6 +121,17 @@ Target ABI yang dihasilkan: `arm64-v8a`, `x86_64`, dan `armeabi-v7a` (32-bit ARM
 ter-install di perangkat yang tidak punya `libgojni.so`. Dukungan 64-bit tetap ada, jadi syarat
 Google Play (wajib menyediakan 64-bit bila menyediakan 32-bit) terpenuhi.
 
+AAR-nya **belum cukup** sebagai dependency file: Gradle hanya mengambil `classes.jar`-nya, jadi
+`jni/<abi>/libgojni.so` harus di-unzip dulu — kalau tidak, APK-nya ter-install dan jalan tetapi
+gateway langsung mati dengan `UnsatisfiedLinkError: libgojni.so not found`:
+
+```bash
+unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
+```
+
+CI melakukan langkah yang sama sebelum Gradle jalan, lalu memastikan APK hasil build benar-benar
+berisi `lib/<abi>/libgojni.so`.
+
 ### 2. Build aplikasi
 
 ```bash

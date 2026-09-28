@@ -16,3 +16,9 @@
 local.properties
 .env
 debug.keystore
+
+# gomobile binding and the native libraries unpacked out of it (generated, never committed).
+# See app/libs/README.md: Gradle only reads classes.jar from a local .aar, so jni/ has to be
+# extracted next to it for libgojni.so to reach the APK.
+/app/libs/wagateway.aar
+/app/libs/wagateway-jni/

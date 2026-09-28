@@ -54,6 +54,15 @@ jobs:
           name: wagateway-aar
           path: app/libs
 
+      # AGP only takes classes.jar out of a local .aar file dependency and ignores its jni/, so
+      # the gateway's libgojni.so has to be unpacked where the jniLibs source set (see
+      # app/build.gradle.kts) picks it up — keep this in sync with the Build workflow.
+      - name: Unpack the AAR native libs
+        run: |
+          rm -rf app/libs/wagateway-jni
+          unzip -o -q app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
+          find app/libs/wagateway-jni -name '*.so' -exec ls -la {} +
+
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:
@@ -103,6 +112,24 @@ jobs:
           if [ -f app/build/outputs/mapping/optimized/usage.txt ]; then
             echo "R8 removed : $(wc -l < app/build/outputs/mapping/optimized/usage.txt) entries (see artifact)"
           fi
+
+      # R8 shrinking is not supposed to touch native libraries, and this is where that would be
+      # noticed: without lib/<abi>/libgojni.so the gateway fails at runtime and the APK is
+      # suspiciously small.
+      - name: Assert the APK carries the gateway native library
+        run: |
+          set -euo pipefail
+          APK=$(ls app/build/outputs/apk/optimized/*.apk | head -1)
+          echo "APK: $APK ($(du -h "$APK" | cut -f1))"
+          unzip -l "$APK" | grep -E 'lib/.*\.so' || true
+          missing=0
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            if ! unzip -l "$APK" | grep -q "lib/$abi/libgojni.so"; then
+              echo "::error::$APK has no lib/$abi/libgojni.so; the WhatsApp gateway cannot load"
+              missing=1
+            fi
+          done
+          exit $missing
 
       - name: Upload optimized APK
         uses: actions/upload-artifact@v7
