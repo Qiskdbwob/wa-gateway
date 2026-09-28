@@ -1164,10 +1164,11 @@ class WhatsAppAgentBridge private constructor(
         scope.launch {
             val access = contactAccess.getAccess(contactId, _whitelistMode.value)
             if (access.decision == ContactAccessRepository.Decision.BLOCK) {
+                val ruleLabel = access.rule?.mode ?: "none"
                 agentLoop.log(
                     "CONTACT_BLOCKED",
-                    "Pesan dari '$contactId' diblokir " +
-                        "(rule=${access.rule?.mode ?: \"none\"}, whitelistMode=${_whitelistMode.value})."
+                    "Pesan dari '$contactId' diblokir (rule=$ruleLabel, " +
+                        "whitelistMode=${_whitelistMode.value})."
                 )
                 // A number blocked only because the whitelist is ON and it was never added
                 // would otherwise get no answer at all, which reads as a broken agent.
@@ -1521,10 +1522,11 @@ class WhatsAppAgentBridge private constructor(
         scope.launch {
             val access = contactAccess.getAccess(contactId, _whitelistMode.value)
             if (access.decision == ContactAccessRepository.Decision.BLOCK) {
+                val ruleLabel = access.rule?.mode ?: "none"
                 agentLoop.log(
                     "CONTACT_BLOCKED",
-                    "Media dari '$contactId' diblokir " +
-                        "(rule=${access.rule?.mode ?: \"none\"}, whitelistMode=${_whitelistMode.value})."
+                    "Media dari '$contactId' diblokir (rule=$ruleLabel, " +
+                        "whitelistMode=${_whitelistMode.value})."
                 )
                 if (access.rule == null) {
                     notifyNotWhitelisted(media.chat.ifBlank { media.sender }, contactId)
@@ -1606,7 +1608,8 @@ class WhatsAppAgentBridge private constructor(
 
         if (effectiveType != "image" && effectiveType != "video") {
             return@withContext if (media.mediaType == "document") {
-                "(Dokumen ${media.mimetype.ifBlank { \"tanpa tipe\" }} diterima, tapi agent belum bisa " +
+                val documentType = media.mimetype.ifBlank { "tanpa tipe" }
+                "(Dokumen $documentType diterima, tapi agent belum bisa " +
                     "membaca format ini. Kirim isinya sebagai teks, atau screenshot halamannya " +
                     "kalau berupa gambar.)"
             } else {
@@ -1622,8 +1625,8 @@ class WhatsAppAgentBridge private constructor(
                 "pendek atau screenshot bagian pentingnya.)"
         }
 
-        // Vision runs on the bytes downloaded above; video is sent inline, which is why the
-        // size gate below exists instead of letting the provider fail with its own error.
+        // Vision runs on the bytes downloaded above; video is sent inline (base64), which is
+        // why the size gate above already refused anything too large to send.
         val provider = visionProvider()
             ?: return@withContext "(Belum ada model vision dikonfigurasi. Isi API key vision di Pengaturan agar saya bisa melihat ${effectiveType}.)"
 
