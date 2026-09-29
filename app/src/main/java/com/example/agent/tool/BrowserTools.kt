@@ -1,20 +1,46 @@
 package com.example.agent.tool
 
+import com.example.agent.browser.BrowserActionResult
 import com.example.agent.browser.BrowserAutomationManager
 import com.example.agent.browser.BrowserSnapshot
 import com.example.agent.model.Tool
 import com.example.agent.model.ToolPermission
 import com.example.agent.model.ToolResult
+import kotlinx.coroutines.delay
 
 /**
  * Browser automation tools (goal: let the agent run a real browsing session — open a page,
- * read it, click, type, submit, scroll, screenshot — and post to a site like a social network
- * the user asked it to).
+ * read it, click, type, select, press a key, submit, scroll, screenshot — and post to a site like
+ * a social network the user asked it to).
  *
  * All of them are AUTO_SAFE: they act on the page the user asked the agent to work with, and
  * they cannot touch the device outside that session. Human approval is requested *inside* the
  * flow only where a human is genuinely required (captcha/2FA), via [BrowserUserHelpTool].
+ *
+ * The engine, not these tools, owns validation and verification: every action is checked against
+ * the live element (visible, enabled, not covered) before it runs, the DOM is given time to settle
+ * afterwards, and a before/after fingerprint decides whether anything actually changed.
  */
+
+/**
+ * Shared output for a mutating browser action: the engine's detail, an honest "nothing changed"
+ * note when the fingerprints matched, and the fresh page view so the model does not need an extra
+ * round-trip on `browser_read`.
+ */
+private fun describeActionResult(
+    manager: BrowserAutomationManager,
+    result: BrowserActionResult,
+    maxChars: Int = 3_000
+): String {
+    val noChange = if (result.changed) {
+        ""
+    } else {
+        "\n\n⚠️ Tidak ada perubahan halaman yang terdeteksi dari aksi ini. Aksi mungkin belum " +
+            "berpengaruh (mis. tombol inert, overlay menutupi, atau halaman belum selesai " +
+            "merender). Ambil browser_read terbaru sebelum melanjutkan."
+    }
+    return result.detail + noChange + "\n\n" + manager.describe(manager.read(maxChars), maxChars)
+}
 
 class BrowserOpenTool(private val manager: BrowserAutomationManager) : Tool {
     override val id: String = "builtin.browser_open"
@@ -70,7 +96,6 @@ class BrowserReadTool(private val manager: BrowserAutomationManager) : Tool {
 
     override suspend fun execute(input: String): ToolResult {
         val maxChars = (JsonArgs.int(input, "max_chars") ?: 6_000).coerceIn(500, 20_000)
-        val snapshot: BrowserSnapshot = manager.read(maxChars)
         if (!manager.isReady()) {
             return ToolResult(
                 success = false,
@@ -78,6 +103,7 @@ class BrowserReadTool(private val manager: BrowserAutomationManager) : Tool {
                 error = "Belum ada halaman terbuka. Panggil browser_open lebih dulu."
             )
         }
+        val snapshot: BrowserSnapshot = manager.read(maxChars)
         return ToolResult(success = true, output = manager.describe(snapshot, maxChars))
     }
 }
@@ -86,13 +112,14 @@ class BrowserClickTool(private val manager: BrowserAutomationManager) : Tool {
     override val id: String = "builtin.browser_click"
     override val name: String = "browser_click"
     override val description: String =
-        "Mengklik elemen halaman memakai ref dari browser_read (contoh \"agx-3\")."
+        "Mengklik elemen halaman memakai ref dari browser_read (contoh \"agx-3\"). Mesin " +
+            "memverifikasi elemen masih ada, aktif, dan tidak tertutup overlay sebelum mengklik."
     override val inputSchema: String = """
         {
           "type": "object",
           "properties": {
             "ref": { "type": "string", "description": "Ref elemen, contoh agx-3." },
-            "wait_ms": { "type": "integer", "description": "Jeda setelah klik sebelum membaca halaman, default 1500 ms." }
+            "wait_ms": { "type": "integer", "description": "Jeda tambahan setelah klik sebelum membaca halaman (ms). Mesin sudah menunggu DOM stabil; pakai ini hanya untuk situs yang lambat." }
           },
           "required": ["ref"]
         }
@@ -105,7 +132,11 @@ class BrowserClickTool(private val manager: BrowserAutomationManager) : Tool {
         if (ref.isEmpty()) return ToolResult(false, "", "Argumen 'ref' wajib diisi.")
         val result = manager.click(ref)
         if (!result.ok) return ToolResult(false, "", result.error ?: "Klik gagal.")
-        return ToolResult(success = true, output = "${result.detail}\n\n" + manager.describe(manager.read(3_000), 3_000))
+        // `wait_ms` used to be documented in the schema but never read; it is now an *extra* delay
+        // on top of the engine's settle wait, for the sites where even that is too fast.
+        val waitMs = (JsonArgs.int(input, "wait_ms") ?: 0).coerceIn(0, 10_000)
+        if (waitMs > 0) delay(waitMs.toLong())
+        return ToolResult(success = true, output = describeActionResult(manager, result))
     }
 }
 
@@ -113,7 +144,7 @@ class BrowserTypeTool(private val manager: BrowserAutomationManager) : Tool {
     override val id: String = "builtin.browser_type"
     override val name: String = "browser_type"
     override val description: String =
-        "Mengetik teks ke sebuah elemen (input/textarea) memakai ref dari browser_read. " +
+        "Mengetik teks ke sebuah elemen (input/textarea/select) memakai ref dari browser_read. " +
             "Set submit=true untuk langsung mengirim form (tombol Enter/submit)."
     override val inputSchema: String = """
         {
@@ -136,7 +167,78 @@ class BrowserTypeTool(private val manager: BrowserAutomationManager) : Tool {
         val submit = JsonArgs.boolean(input, "submit") ?: false
         val result = manager.type(ref, text, submit)
         if (!result.ok) return ToolResult(false, "", result.error ?: "Mengetik gagal.")
-        return ToolResult(success = true, output = "${result.detail}\n\n" + manager.describe(manager.read(3_000), 3_000))
+        return ToolResult(success = true, output = describeActionResult(manager, result))
+    }
+}
+
+/**
+ * Picks an option in a native `<select>`. Custom dropdowns built from `<div>`s are not `<select>`
+ * elements — the engine says so honestly instead of silently doing nothing, and the model should
+ * then open the dropdown with browser_click and click the option.
+ */
+class BrowserSelectTool(private val manager: BrowserAutomationManager) : Tool {
+    override val id: String = "builtin.browser_select"
+    override val name: String = "browser_select"
+    override val description: String =
+        "Memilih opsi pada elemen <select> memakai ref dari browser_read. Cocokkan lewat value " +
+            "atau teks labelnya (mis. \"Indonesia\"). Jika elemennya bukan <select>, tool ini " +
+            "melaporkannya; pakai browser_click pada opsinya untuk dropdown kustom."
+    override val inputSchema: String = """
+        {
+          "type": "object",
+          "properties": {
+            "ref": { "type": "string", "description": "Ref elemen <select>, contoh agx-4." },
+            "value": { "type": "string", "description": "Nilai opsi: value-nya atau teks labelnya (mis. \"Indonesia\")." }
+          },
+          "required": ["ref", "value"]
+        }
+    """.trimIndent()
+
+    override val permission: ToolPermission = ToolPermission.AUTO_SAFE
+
+    override suspend fun execute(input: String): ToolResult {
+        val ref = JsonArgs.string(input, "ref")?.trim().orEmpty()
+        val value = JsonArgs.string(input, "value")?.trim().orEmpty()
+        if (ref.isEmpty()) return ToolResult(false, "", "Argumen 'ref' wajib diisi.")
+        if (value.isEmpty()) return ToolResult(false, "", "Argumen 'value' wajib diisi.")
+        val result = manager.select(ref, value)
+        if (!result.ok) return ToolResult(false, "", result.error ?: "Memilih opsi gagal.")
+        return ToolResult(success = true, output = describeActionResult(manager, result))
+    }
+}
+
+/**
+ * Sends one key to the focused element. This is the only way to close an overlay (Escape), move
+ * between fields (Tab) or submit a widget that is not inside a `<form>` (Enter).
+ */
+class BrowserPressKeyTool(private val manager: BrowserAutomationManager) : Tool {
+    override val id: String = "builtin.browser_press_key"
+    override val name: String = "browser_press_key"
+    override val description: String =
+        "Menekan satu tombol pada elemen yang sedang fokus: Enter (submit/cari), Escape (tutup " +
+            "modal/dropdown), Tab (pindah field), Backspace, Space, dan tombol panah."
+    override val inputSchema: String = """
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "enum": ["Enter", "Escape", "Tab", "Backspace", "Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"],
+              "description": "Tombol yang ditekan."
+            }
+          },
+          "required": ["key"]
+        }
+    """.trimIndent()
+
+    override val permission: ToolPermission = ToolPermission.AUTO_SAFE
+
+    override suspend fun execute(input: String): ToolResult {
+        val key = JsonArgs.string(input, "key")?.trim().orEmpty()
+        if (key.isEmpty()) return ToolResult(false, "", "Argumen 'key' wajib diisi.")
+        val result = manager.pressKey(key)
+        if (!result.ok) return ToolResult(false, "", result.error ?: "Menekan tombol gagal.")
+        return ToolResult(success = true, output = describeActionResult(manager, result))
     }
 }
 
@@ -288,7 +390,7 @@ class BrowserUserHelpTool(private val manager: BrowserAutomationManager) : Tool 
             ToolResult(
                 success = false,
                 output = "",
-                error = "Pengguna belum menyelesaikan langkah manual dalam batas waktu. " +
+                error = "Pengguna belum menyelesaikan (atau membatalkan) langkah manual. " +
                     "Jangan mengarang hasil; beri tahu pengguna bahwa langkah itu masih tertunda."
             )
         }

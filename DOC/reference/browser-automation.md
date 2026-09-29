@@ -1,5 +1,21 @@
 # Feature: Browser Automation (Embedded Browser Agent)
 
+> ⚠️ **PENTING — dokumen ini BUKAN deskripsi implementasi repo ini.**
+>
+> Isi di bawah adalah *transfer spec* untuk project lain (**Amaya**: Kotlin/Compose + **GeckoView**,
+> `BrowserUseToolset`, `BrowserSessionManager`, WebExtension bridge, SharedPreferences
+> `browser_sessions`, debug harness ADB). Tidak ada satu pun kelas/artefak itu di repo WA Gateway
+> ini, dan jangan menganggap fitur yang disebut di sini (fingerprint Scheme G, `steps[]`, sesi per
+> percakapan, `BrowserDebugActivity`) sudah ada di sini.
+>
+> Implementasi yang benar-benar berjalan di repo ini adalah **WebView Android**:
+> `app/src/main/java/com/example/agent/browser/WebViewBrowserEngine.kt` (eksekusi + validasi +
+> verifikasi), `BrowserScripts.kt` (skrip DOM & pembacaan hasil), `BrowserAutomationManager.kt`
+> (login generik + serah terima captcha/2FA), `BrowserModels.kt` (antarmuka `BrowserEngine`),
+> `app/src/main/java/com/example/agent/tool/BrowserTools.kt` (tool model-facing), dan
+> `app/src/main/java/com/example/ui/browser/BrowserScreen.kt` (UI). Bacalah dokumen ini sebagai
+> daftar ide, bukan sebagai sumber kebenaran kode di repo ini.
+
 ## Status
 
 - Status: implemented (production path + debug harness); beberapa area sengaja tidak ditangani (lihat Known Limitations)

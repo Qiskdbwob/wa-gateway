@@ -429,7 +429,30 @@ bukan error compile.
   mengakhirinya hanya `browser_logout` (atau tombol logout di UI), yang menghapus cookie, cache,
   form data, dan history.
 * Alur: `browser_open` → `browser_read` (teks + daftar elemen `agx-N`) → `browser_click`
-  / `browser_type` (dengan `submit`) → `browser_scroll` → `browser_screenshot`.
+  / `browser_type` (dengan `submit`) / `browser_select` / `browser_press_key` → `browser_scroll`
+  → `browser_screenshot`.
+* **Aksi divalidasi, lalu diverifikasi.** Setiap aksi dijalankan lewat `BrowserScripts`, yang
+  menolak elemen yang hilang, berukuran nol, `disabled`, `readonly`, atau **tertutup elemen lain**
+  (uji `document.elementFromPoint` di titik tengahnya) — `el.click()` melewati hit-testing, jadi
+  tanpa uji itu sebuah overlay bisa menelan atau salah mengarahkan aksi. Setelah aksi, mesin
+  mengukur *fingerprint* halaman (URL, jumlah node, panjang teks, hash nilai semua field, dialog,
+  posisi scroll) sebelum dan sesudah; kalau identik, hasilnya diberi catatan jujur “tidak ada
+  perubahan halaman” alih-alih sukses palsu. Catatan: nilai hasil `evaluateJavascript` di Android
+  dikodekan JSON (string kembali **dengan** tanda kutip), dan seluruh token hasil kini dibaca
+  lewat satu jalur `stripQuotes` — sebelumnya perbandingan mentah membuat elemen yang tidak
+  ditemukan tetap dilaporkan “sukses”.
+* **Menunggu DOM, bukan menebak.** Sebelum aksi mesin memasang `MutationObserver`, lalu setelah
+  aksi menunggu sampai DOM berhenti berubah (dua sampel identik berturut-turut, batas 4 detik)
+  sebelum membaca halaman. Sebelumnya pembacaan terjadi seketika, sehingga SPA hampir selalu
+  terbaca dalam keadaan pra-render. `wait_ms` pada `browser_click` sekarang benar-benar dipakai
+  sebagai jeda tambahan (sebelumnya hanya ada di schema).
+* **Fallback berlapis untuk ref basi.** Kalau ref `agx-N` tidak lagi ada (DOM dirender ulang), mesin
+  mengambil snapshot baru dan mencari ulang elemen yang sama lewat deskriptor yang diingat
+  (tag/type/label, lalu value) — maksimal 3 percobaan — bukan menyerah atau menebak posisi.
+* Halaman utama kini juga memuat `[role=combobox]`, `[role=option]`, `[role=menuitem]`,
+  `[contenteditable=""]` dan `[tabindex]` (selain kontrol native), pengetikan memakai *prototype
+  value setter* agar framework React/Vue benar-benar melihat nilainya, dan `<select>` ditangani
+  `browser_select` (value → label persis → label parsial).
 * **Login**: pengguna menyimpan akun per situs di Pengaturan → Browser (password dienkripsi
   `SecretCipher`), `browser_login` mengisi form login secara generik dan melaporkan jujur bila
   formnya tidak dikenali.
@@ -439,6 +462,9 @@ bukan error compile.
 * `browser_screenshot` menyimpan PNG di workspace `output/`, dan `send_file_to_chat` mengirimkannya
   ke chat (gambar sebagai foto, tipe lain sebagai dokumen) — jadi agent bisa memperlihatkan hasil
   kerjanya di WhatsApp.
+* Tombol “Batalkan” pada serah terima kini benar-benar dilaporkan sebagai **gagal** ke agent
+  (`abandonUserAction` mengirim `false`); sebelumnya gate-nya sama dengan “Selesai” sehingga
+  pembatalan sampai ke agent sebagai sukses.
 * Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
   pengguna bahwa agent boleh mengendalikan sesi nyata.
 
@@ -556,8 +582,9 @@ pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
   `WebSearchScrapeTest` dan aturan kejujurannya di `WebSearchToolTest`), `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
-  `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,
-  `browser_logout` — plus tool `mcp__<server>__<tool>` untuk setiap server MCP yang Anda tambahkan.
+  `browser_type`, `browser_select`, `browser_press_key`, `browser_scroll`, `browser_screenshot`,
+  `browser_login`, `browser_ask_user`, `browser_logout` — plus tool `mcp__<server>__<tool>` untuk
+  setiap server MCP yang Anda tambahkan.
   Yang belum ada tinggal Linux sandbox penuh (proot/rootfs); rencana teknisnya ada di
   `DOC/riset-optimasi.md` bagian 3.1 dan dossier `DOC/reference/linux-sandbox/`.
 * Scheduler: ticker 60 detik saat aplikasi hidup + wake-up WorkManager tiap 15 menit saat proses

@@ -32,8 +32,13 @@ class BrowserAutomationManager(
     private val _pendingUserAction = MutableStateFlow<UserActionRequest?>(null)
     val pendingUserAction: StateFlow<UserActionRequest?> = _pendingUserAction.asStateFlow()
 
+    /**
+     * Signals the parked turn. `true` = the user finished the manual step, `false` = the user
+     * abandoned it. It used to be a `Unit` gate shared by both buttons, which meant "Batalkan"
+     * reached the agent as a success — the one thing this handoff must never do.
+     */
     @Volatile
-    private var waiter: CompletableDeferred<Unit>? = null
+    private var waiter: CompletableDeferred<Boolean>? = null
 
     val engineKind: String get() = engine.kind
 
@@ -47,6 +52,11 @@ class BrowserAutomationManager(
 
     suspend fun type(ref: String, text: String, submit: Boolean): BrowserActionResult =
         engine.typeText(ref, text, submit)
+
+    suspend fun select(ref: String, value: String): BrowserActionResult =
+        engine.selectOption(ref, value)
+
+    suspend fun pressKey(key: String): BrowserActionResult = engine.pressKey(key)
 
     suspend fun scroll(direction: String, amountPx: Int = 800): BrowserActionResult =
         engine.scroll(direction, amountPx)
@@ -84,10 +94,9 @@ class BrowserAutomationManager(
         val passwordField = snapshot.elements.firstOrNull {
             it.type.equals("password", ignoreCase = true)
         }
-        val userField = snapshot.elements.firstOrNull {
-            it.tag == "input" && (it.type.equals("email", true) || it.type.equals("text", true) ||
-                it.type.isEmpty())
-        }
+        // Not "the first text input": login pages routinely put a search box first, which would
+        // type the username into the wrong field and fail with a confusing error.
+        val userField = pickUserField(snapshot.elements)
 
         if (userField == null || passwordField == null) {
             // Either already logged in, or a flow we cannot fill blindly (SSO, QR, phone number).
@@ -158,7 +167,7 @@ class BrowserAutomationManager(
             id = "uact-" + UUID.randomUUID().toString().take(6),
             instruction = instruction
         )
-        val gate = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Boolean>()
         waiter = gate
         _pendingUserAction.value = request
 
@@ -172,7 +181,7 @@ class BrowserAutomationManager(
             // The chat channel may be unavailable (offline, no session); the tool result still explains.
         }
 
-        val finished = withTimeoutOrNull(timeoutMs) { gate.await() } != null
+        val finished = withTimeoutOrNull(timeoutMs) { gate.await() } ?: false
         _pendingUserAction.value = null
         waiter = null
         return finished
@@ -180,7 +189,7 @@ class BrowserAutomationManager(
 
     /** Called by the Browser screen when the user says the manual step is done. */
     fun completeUserAction() {
-        waiter?.complete(Unit)
+        waiter?.complete(true)
     }
 
     /** Called when the user gives up; the agent is told the step did not happen. */
@@ -188,7 +197,7 @@ class BrowserAutomationManager(
         val gate = waiter
         waiter = null
         _pendingUserAction.value = null
-        gate?.complete(Unit)
+        gate?.complete(false)
     }
 
     /** A compact, model-friendly description of what is on screen. */
@@ -224,5 +233,35 @@ class BrowserAutomationManager(
             "verifikasi", "two-factor", "2fa", "one-time code", "kode verifikasi",
             "security code", "confirm you are not a robot"
         )
+
+        /**
+         * Hints that a text field is the *account* field rather than a search box. The snapshot
+         * merges `aria-label`, `title`, `placeholder`, text, `name` and `id` into [BrowserElement.label],
+         * so matching against it covers the attributes sites actually use.
+         */
+        private val USER_FIELD_HINTS = listOf(
+            "user", "email", "mail", "login", "masuk", "akun", "username",
+            "phone", "telepon", "nomor", "hp", "account"
+        )
+
+        /**
+         * Picks the username/email field of a login form: a text-ish input whose label matches a
+         * known account hint, falling back to the first text-ish input when none matches (some
+         * sites only expose opaque ids, and typing into *something* is better than giving up).
+         */
+        internal fun pickUserField(elements: List<BrowserElement>): BrowserElement? {
+            val candidates = elements.filter { element ->
+                element.tag == "input" &&
+                    (element.type.equals("email", ignoreCase = true) ||
+                        element.type.equals("text", ignoreCase = true) ||
+                        element.type.isBlank())
+            }
+            if (candidates.isEmpty()) return null
+            val hinted = candidates.firstOrNull { element ->
+                val haystack = element.label.lowercase()
+                USER_FIELD_HINTS.any { haystack.contains(it) }
+            }
+            return hinted ?: candidates.first()
+        }
     }
 }

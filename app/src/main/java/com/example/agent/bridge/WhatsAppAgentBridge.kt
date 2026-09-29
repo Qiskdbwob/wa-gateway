@@ -64,9 +64,11 @@ import com.example.agent.tool.BrowserClickTool
 import com.example.agent.tool.BrowserClearSessionTool
 import com.example.agent.tool.BrowserLoginTool
 import com.example.agent.tool.BrowserOpenTool
+import com.example.agent.tool.BrowserPressKeyTool
 import com.example.agent.tool.BrowserReadTool
 import com.example.agent.tool.BrowserScreenshotTool
 import com.example.agent.tool.BrowserScrollTool
+import com.example.agent.tool.BrowserSelectTool
 import com.example.agent.tool.BrowserTypeTool
 import com.example.agent.tool.BrowserUserHelpTool
 import com.example.agent.tool.SendFileToChatTool
@@ -625,6 +627,8 @@ class WhatsAppAgentBridge private constructor(
             registry.register(BrowserReadTool(browserAutomation))
             registry.register(BrowserClickTool(browserAutomation))
             registry.register(BrowserTypeTool(browserAutomation))
+            registry.register(BrowserSelectTool(browserAutomation))
+            registry.register(BrowserPressKeyTool(browserAutomation))
             registry.register(BrowserScrollTool(browserAutomation))
             registry.register(
                 BrowserScreenshotTool(browserAutomation) { bytes, fileName ->
@@ -636,6 +640,10 @@ class WhatsAppAgentBridge private constructor(
             registry.register(BrowserClearSessionTool(browserAutomation))
         } else {
             BROWSER_TOOL_NAMES.forEach { registry.unregister(it) }
+            // Tools added after the list above was written; kept explicit so disabling browser
+            // automation can never leave an opt-out tool registered.
+            registry.unregister("browser_select")
+            registry.unregister("browser_press_key")
         }
     }
 

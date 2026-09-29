@@ -79,8 +79,19 @@ dan `go-wagateway/`, bukan dari rencana di dokumen.
   `git push`, tulis di luar workspace → `PENDING_APPROVAL` + `/approve`.
 - ✅ **Kirim file hasil agent ke chat** (`send_file_to_chat`: screenshot sebagai foto, lain sebagai dokumen).
 - ✅ **Browser automation**: `browser_open`, `browser_read`, `browser_click`, `browser_type`,
-  `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`, `browser_logout`
-  (engine Android WebView di balik antarmuka `BrowserEngine`).
+  `browser_select`, `browser_press_key`, `browser_scroll`, `browser_screenshot`, `browser_login`,
+  `browser_ask_user`, `browser_logout` (engine Android WebView di balik antarmuka `BrowserEngine`).
+- ✅ **Validasi sebelum aksi**: elemen hilang / berukuran nol / `disabled` / `readonly` / tertutup
+  overlay ditolak dengan pesan yang bisa ditindaklanjuti (uji `elementFromPoint`), bukan diklik
+  buta lewat `el.click()`.
+- ✅ **Verifikasi sesudah aksi**: *fingerprint* halaman (URL, node, teks, hash nilai field, dialog,
+  scroll) dibandingkan sebelum-sesudah; aksi yang tidak mengubah apa pun diberi catatan jujur
+  “tidak ada perubahan halaman”.
+- ✅ **Menunggu DOM stabil**: `MutationObserver` dipasang sebelum aksi, sesudahnya mesin menunggu
+  sampai DOM berhenti berubah (maks 4 detik) sebelum membaca halaman; `wait_ms` pada
+  `browser_click` kini benar-benar dipakai.
+- ✅ **Fallback ref basi**: ref yang hilang dicari ulang lewat deskriptor elemen (tag/type/label,
+  lalu value), maksimal 3 percobaan — bukan menebak posisi.
 - ✅ Serah terima captcha/2FA ke pengguna (`browser_ask_user` menunggu, bukan mengarang hasil).
 - ✅ **Sesi login browser persisten**: cookie disimpan `CookieManager` aplikasi di data privat app,
   bukan di objek WebView. Login sekali (lewat `browser_login` atau manual di tab Browser) tetap
@@ -237,6 +248,9 @@ Dokumen referensi untuk yang belum ada sudah disimpan di `DOC/reference/`
   objek WebView-nya, dan hal ini belum diverifikasi di perangkat nyata melintasi restart aplikasi;
   situs yang mengakhiri sesi di sisi server (atau memakai token non-cookie) tetap bisa meminta login
   ulang. Tombol logout di UI dan tool `browser_logout` menghapus sesi secara eksplisit.
+* **Tombol “Batalkan” pada serah terima captcha/2FA** dilaporkan sebagai gagal ke agent
+  (`abandonUserAction` menyelesaikan gate dengan `false`). Sebelumnya gate itu bertipe `Unit` dan
+  dipakai bersama oleh “Selesai”, sehingga pembatalan terbaca sebagai langkah yang berhasil.
 
 ## Catatan engine browser
 
