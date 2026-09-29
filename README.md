@@ -21,7 +21,7 @@ WhatsApp  ⇄  Go gateway (whatsmeow)  ⇄  Kotlin Bridge  ⇄  Agent Loop  ⇄ 
 | Transport WhatsApp | `go-wagateway/` | `NewClient / Connect / Disconnect / SendText / Logout`, event QR & pesan masuk, session SQLite di app-internal storage |
 | Binding | `app/libs/wagateway.aar` (dibuat CI) | Boundary gomobile Go ↔ Kotlin; hanya `String / Boolean / Long` yang melintas |
 | Gateway | `com.example.wagateway` | `WaGatewayManager` (StateFlow), `WaGatewayService` (foreground), `WaGatewayViewModel` |
-| Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
+| Agent Core | `com.example.agent` | `AgentLoop` (state machine), `ModelErrorClassifier`, `ModelRouter` (retry + fallback + probe), `ProviderDirectory` (multi-provider: pilih aktif + urutan failover), `ToolRegistry` + `BuiltInTools`, `OpenAiCompatibleProvider`, `EchoTestProvider` |
 | Persistensi | `com.example.agent.storage` | Room: `agent_sessions`, `agent_messages`, `agent_configs` + `SecretCipher` (API key) |
 | Workspace | `com.example.agent.workspace` | `Workspace` — root per-agent di `filesDir/workspaces/<agentId>` + guard path (anti `..` & symlink escape) |
 | Adapter | `WhatsAppAgentBridge` | Menjembatani gateway ⇄ agent loop, memuat/menyimpan konfigurasi |
@@ -59,6 +59,7 @@ antar kontak tidak pernah tercampur.
 | Provider OpenAI-compatible + Echo fallback offline | ✅ |
 | Penyimpanan API key terenkripsi (Android Keystore, AES-256-GCM) | ✅ |
 | Keys pool: banyak API key dirotasi saat satu kunci kena limit/quota (401/402/403/429) | ✅ |
+| Multi-provider: beberapa provider (base URL + model + key pool masing-masing) dengan failover otomatis sesuai urutan | ✅ |
 | Unified search: satu tool `search` untuk memori, riwayat chat, task, file workspace & daftar tool | ✅ |
 | UI: Beranda, Chat, Tugas, Memori, Pengaturan, Developer | ✅ |
 | Kesadaran waktu lokal: hari/tanggal/jam perangkat disuntik ke system prompt tiap turn, plus tool `current_time` | ✅ |
@@ -69,10 +70,10 @@ antar kontak tidak pernah tercampur.
 | `read_file` bertahap (`offset`/`limit` per baris, tanpa memotong tanpa jejak) | ✅ |
 | Probe model + panel token/latensi di Developer | ✅ |
 | Auto-reply grup | ❌ (sengaja dinonaktifkan, hanya chat pribadi) |
-| Kontrol akses kontak: whitelist & blacklist (per nomor, dinormalisasi dari JID) | ✅ |
+| Kontrol akses kontak: whitelist & blacklist (JID dinormalisasi; entri boleh prefix nomor atau format lokal 08xx; pengirim @lid dipetakan ke nomor) | ✅ |
 | Command chat `/help /status /whitelist /blacklist /approve /reject /compact /remember /learning` | ✅ |
-| Pesan media masuk: gambar/video (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
-| Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (API siap; UI belum memakainya) |
+| Pesan media masuk: gambar/video/stiker (analisis vision), dokumen teks dibaca, audio dicatat | ✅ |
+| Kirim media keluar: gambar, dokumen, audio/voice note, video | ✅ (lewat tool `send_file_to_chat`; tombol kirim manual di UI belum ada) |
 | Tool system: registry, tool-call loop, batas iterasi, retry/fallback pada tool turn | ✅ |
 | Workspace isolation + file tools (list/read/write/append/move/copy/delete/mkdir) | ✅ |
 | Permission tool (SAFE / AUTO_SAFE / CONFIRM) + approval destruktif via chat & UI | ✅ |
@@ -120,6 +121,17 @@ Target ABI yang dihasilkan: `arm64-v8a`, `x86_64`, dan `armeabi-v7a` (32-bit ARM
 ter-install di perangkat yang tidak punya `libgojni.so`. Dukungan 64-bit tetap ada, jadi syarat
 Google Play (wajib menyediakan 64-bit bila menyediakan 32-bit) terpenuhi.
 
+AAR-nya **belum cukup** sebagai dependency file: Gradle hanya mengambil `classes.jar`-nya, jadi
+`jni/<abi>/libgojni.so` harus di-unzip dulu — kalau tidak, APK-nya ter-install dan jalan tetapi
+gateway langsung mati dengan `UnsatisfiedLinkError: libgojni.so not found`:
+
+```bash
+unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
+```
+
+CI melakukan langkah yang sama sebelum Gradle jalan, lalu memastikan APK hasil build benar-benar
+berisi `lib/<abi>/libgojni.so`.
+
 ### 2. Build aplikasi
 
 ```bash
@@ -135,7 +147,7 @@ gradle assembleOptimized     # APK rilis-grade: R8 + resource shrinking, non-deb
 
 | Workflow | Job | Trigger | Hasil |
 |---|---|---|---|
-| `build.yml` | `gateway-aar` | semua push/PR | `wagateway.aar` (artifact) — memanggil workflow reusable `gateway-aar.yml` |
+| `build.yml` | `gateway-aar` | semua push/PR | `go build` + `go test` lalu `wagateway.aar` (artifact) — memanggil workflow reusable `gateway-aar.yml` |
 | `build.yml` | `android` | butuh `gateway-aar` | unit test + `wagateway-debug-apk` |
 | `build.yml` | `release` | hanya tag `v*` | APK & AAB **bertanda tangan** + GitHub Release |
 | `optimized-apk.yml` | `optimized` | manual, push ke `main`, atau PR yang menyentuh keep-rules R8 / build config | **`wagateway-optimized-apk`** + laporan R8 |
@@ -158,13 +170,16 @@ APK "teroptimasi" yang sebenarnya belum disusutkan.
 2. Pilih **QR** atau **Pairing Code**, lalu hubungkan akun WhatsApp Anda. Setelah tertaut, aplikasi
    akan **menyambung ulang otomatis** setiap dibuka — tidak perlu scan QR lagi. Pakai tombol
    **Putuskan Sesi** hanya bila ingin menautkan perangkat/akun lain dari awal.
-3. Isi **Base URL**, **API Key**, **Model ID**, dan **System Prompt** di Pengaturan.
+3. Di **Pengaturan → Model & Provider**, tekan **Tambah provider**: pilih preset (OpenAI, OpenRouter,
+   Groq, Gemini, DeepSeek) atau isi sendiri nama, **Base URL**, **Model ID**, dan **API key**
+   (satu per baris kalau punya beberapa). Isi **System Prompt** di bagian Persona.
 4. Aktifkan **Auto-Reply Pesan WhatsApp** di Beranda, atau ngobrol langsung di tab **Chat**.
 5. Cek status di Beranda, riwayat di tab **Tugas** & **Memori**.
 
 Provider apa pun yang kompatibel dengan API OpenAI (`POST {baseUrl}/chat/completions`) bisa dipakai —
-OpenAI, OpenRouter, LM Studio, Ollama, atau gateway internal. Bila API Key kosong dan Echo fallback
-aktif, agent tetap membalas secara lokal tanpa jaringan.
+OpenAI, OpenRouter, LM Studio, Ollama, atau gateway internal, dan **beberapa provider bisa aktif
+sekaligus** (lihat bagian Multi-provider). Bila tidak ada API key dan Echo fallback aktif, agent tetap
+membalas secara lokal tanpa jaringan.
 
 ---
 
@@ -180,7 +195,13 @@ aktif, agent tetap membalas secara lokal tanpa jaringan.
 * Saat ini pesan grup diabaikan untuk mencegah agent mengirim ke grup tanpa konfigurasi.
 * **Whitelist mode**: bila diaktifkan (Pengaturan atau `/whitelist on`), hanya nomor yang terdaftar
   yang diproses; pesan lain di-drop sebelum masuk ke model dan dicatat sebagai `CONTACT_BLOCKED`.
-  Blacklist selalu menang atas whitelist.
+  Nomor yang belum terdaftar **diberi tahu sekali** (`CONTACT_NOT_WHITELISTED`) supaya tidak terasa
+  seperti agent yang mati; nomor yang di-blacklist tetap dibiarkan tanpa balasan.
+  Entri boleh nomor lengkap, **prefix nomor** (mis. `62812345` untuk seluruh nomor satu tasal;
+  minimal 7 digit), atau **format lokal 08xx** yang otomatis setara dengan bentuk `62…`. Chat dari
+  pengirim **@lid** (WhatsApp menyembunyikan nomor) dipetakan ke nomor teleponnya di gateway
+  (LID→PN whatsmeow), jadi kontak yang sudah di-whitelist tidak tiba-tiba terblokir. Blacklist
+  selalu menang atas whitelist.
 * Tool berkelas `CONFIRM` **tidak** pernah ditawarkan ke model selama approval dimatikan, dan saat
   approval aktif pemanggilannya **tidak langsung dieksekusi** — agent membuat request `appr-xxxxxxxx`
   dan menunggu `/approve <id>` atau `/reject <id>` (kedaluwarsa 24 jam, hanya bisa diputuskan sekali).
@@ -241,6 +262,16 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
   pesan error — tidak ada bubble "sedang berpikir" yang menggantung.
 * **Progres nyata**: retry, fallback, dan pemakaian tool dari Agent Loop mengedit bubble yang sama
   (mis. `↻ Mencoba ulang (2/2)...`, `🔧 Menggunakan tool: current_time...`).
+* **Jawaban terpotong dilanjutkan**: kalau provider menghentikan jawaban karena batas panjang
+  keluaran (`finish_reason = "length"`) **atau** teksnya berhenti di tengah kalimat (berakhir
+  dengan `:`, `…`, tanda buka, atau kata seperti `dan`/`lalu`/`untuk` walau provider bilang
+  "stop"), Agent Loop meminta lanjutannya (maksimum 2 kali) dan menyambungnya ke teks yang sudah
+  ada. Kalau tetap belum selesai, gelembungnya ditutup keterangan jujur
+  `(…jawaban terpotong: <alasan>. Kirim "lanjut" untuk sisanya.)` — bukan kalimat menggantung
+  seperti "Sepertinya akses pencarian web sedang tidak tersedia. Aku coba dari sumber langsung:".
+* **Jawaban panjang dipecah utuh**: di atas 3.500 karakter, jawaban dikirim sebagai beberapa bubble
+  pada batas paragraf/kalimat (fungsi murni `splitForWhatsApp`, tanpa satu karakter hilang). Ini
+  mencegah ekor jawaban terpotong atau gagal terkirim karena batas bubble WhatsApp.
 
 ---
 
@@ -288,10 +319,15 @@ Perbaikan: keputusan resume/QR kini berdasarkan `Store.ID` di SQLite store (`Cli
 
 **Kontrol akses kontak (prioritas keamanan).** `contact_rules` menyimpan whitelist/blacklist satu
 baris per nomor; `normalizePhone()` menyamakan semua bentuk JID (`@s.whatsapp.net`, `@c.us`, device
-suffix, `+`, spasi) sebelum dicocokkan. Saat whitelist mode aktif, hanya nomor terdaftar yang
+suffix, `+`, spasi) sebelum dicocokkan. Pencocokannya memakai `matchingRule()`: id persis lebih
+dulu, lalu entri **prefix** (≥7 digit) dan entri **format lokal 08xx** — dan aturan BLOCK selalu
+menang bila dua entri cocok dengan nomor yang sama. Saat whitelist mode aktif, hanya nomor terdaftar
+yang
 lolos — pengecekan terjadi **sebelum** agent membaca pesan, jadi pesan yang diblokir tidak pernah
-masuk history maupun memori. Pesan grup tetap diabaikan. Bisa dikelola dari Pengaturan atau lewat
-`/whitelist` dan `/blacklist`.
+masuk history maupun memori. Pengirim yang diblokir karena nomornya belum terdaftar mendapat satu
+pesan penjelasan (maks. sekali per kontak per proses), sedangkan entri `BLOCK`/`PENDING` tetap senyap. Pengirim dengan JID **@lid** dipetakan ke nomor telepon di sisi Go
+(`resolveJIDForRules`, memakai LIDStore whatsmeow) sebelum aturan dievaluasi. Pesan grup tetap
+diabaikan. Bisa dikelola dari Pengaturan atau lewat `/whitelist` dan `/blacklist`.
 
 **Memori jangka panjang.** Tiga lapisan dalam satu tabel `memory_items`: `EPISODIC` (ringkasan
 compact & peristiwa penting), `KNOWLEDGE` (fakta yang diminta diingat), `LEARNING` (pelajaran dari
@@ -313,11 +349,17 @@ pertama membuat record `approval_requests` (`appr-xxxxxxxx`, TTL 24 jam) dan mod
 tahu pengguna. Persetujuan datang lewat `/approve <id>` di chat atau tombol Setujui di Pengaturan —
 bukan dialog desktop yang tidak ada di WhatsApp. Satu request hanya bisa diputuskan sekali.
 
-**Scheduler.** `scheduled_tasks` menyimpan ekspresi `interval:<detik>` (minimum 60 detik,
-maksimum 30 hari) + prompt yang dijalankan berkala. Ticker 60 detik mengeksekusi task yang jatuh
-tempo lewat AgentLoop (jawabannya dikirim ke chat asal), mencatat `COMPLETED`/`FAILED` beserta
-hasil/errornya, dan **menentukan jadwal berikutnya sebelum eksekusi** supaya eksekusi lambat tidak
-memicu dobel. Tool `schedule_task` membuat task ini dari percakapan.
+**Scheduler.** `scheduled_tasks` menyimpan dua bentuk jadwal: `daily:HH:MM[,HH:MM...]` untuk jam
+pasti waktu perangkat (mis. `daily:06:00,20:00` = tiap hari 6 pagi dan 8 malam) dan
+`interval:<detik>` (minimum 60 detik, maksimum 30 hari) untuk jeda tetap. Ticker 60 detik
+mengeksekusi task yang jatuh tempo lewat AgentLoop (jawabannya dikirim ke chat asal), mencatat
+`COMPLETED`/`FAILED` beserta hasil/errornya, dan **menentukan jadwal berikutnya sebelum eksekusi**
+supaya eksekusi lambat tidak memicu dobel. `daily:` selalu dihitung dari jam dinding dan hasilnya
+selalu di masa depan, jadi interval 6 jam tidak lagi menggeser jadwal (21:15 → 03:15) dan slot yang
+terlewat saat HP mati berjalan sekali saja tanpa menggeser slot berikutnya. Tool `schedule_task`
+membuat task dari percakapan dan mengembalikan jadwal yang benar-benar tersimpan + waktu eksekusi
+berikutnya, jadi model tidak bisa "mengonfirmasi" jadwal yang tidak pernah dibuat (task yang gagal
+atau jadwalnya tidak valid dijawab sebagai kegagalan tool).
 
 **Subagent latar belakang.** `delegate_task` membuat record `agent_tasks` dan langsung
 mengembalikan id-nya — agent utama **tidak menunggu**, ia menjawab pengguna lebih dulu. Subagent
@@ -329,11 +371,28 @@ moderator yang menyintesis, dibatasi `withTimeout(120s)` dan panjang jawaban sup
 WhatsApp. `reflect` menyimpan pelajaran sebagai kandidat, bukan langsung dipercaya.
 
 **Media WhatsApp.** Sisi Go mengirim payload protobuf media ke Kotlin (`OnMedia`), lalu bridge
-mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Gambar/video dianalisis provider vision
+mengunduh + mendekripsi bytes-nya lewat `DownloadMedia`. Sebelum dibaca, envelope WhatsApp dibuka
+dulu (`unwrapMessage`: `ephemeralMessage` untuk chat pesan sementara, `viewOnceMessage` /
+`viewOnceMessageV2` untuk media lihat-sekali, `documentWithCaptionMessage`, plus `ptvMessage` untuk
+video bulat dan `lottieStickerMessage`/`audioStickerMessage` untuk stiker) — tanpa ini chat tersebut
+tampak kosong. Stiker dikirim ke agent sebagai gambar (WebP) supaya isinya bisa dilihat. Gambar/video dianalisis provider vision
 (`OpenAiVisionProvider` atau `GeminiVisionProvider` native), dokumen teks dibaca langsung, dan
-hasilnya digabung ke prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
-Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersedia di
-`WaGatewayManager`.
+foto/video yang dikirim sebagai file diarahkan lewat MIME-nya supaya tetap dianalisis. Video besar
+(>15 MB) ditolak dengan alasan jelas karena bytes-nya dikirim inline (base64). Hasilnya digabung ke
+prompt percakapan; pengguna mendapat pesan "📎 Media diterima…" lebih dulu.
+**Media keluar.** Tool `send_file_to_chat` mengirim file workspace atas inisiatif model, dan
+routing-nya mengikuti MIME: `image/*` sebagai foto, `video/*` sebagai klip, `audio/ogg` (Ogg/Opus)
+sebagai klip video, `audio/ogg` (Ogg/Opus) sebagai voice note, sisanya sebagai dokumen — lewat
+`WaGatewayManager` (`sendImage`, `sendVideoMessage`, `sendAudio`, `sendDocument`). Batas ukuran
+16 MB (batas WhatsApp).
+
+Satu catatan teknis: `wagateway.Client.sendVideo` dipanggil lewat refleksi (lookup sekali, lihat
+`sendVideoMethod` di `WaGatewayManager`). AAR-nya memang mendeklarasikan method itu — workflow
+Build mencetaknya dengan `javap` dan gagal kalau hilang — tetapi compiler Kotlin melaporkan
+pemanggilan langsungnya sebagai *unresolved reference* sementara method lain di kelas yang sama
+resolusi normal. Dengan refleksi, video tetap dikirim sebagai video (bukan dokumen), dan kalau
+binding-nya benar-benar tidak punya method itu, kegagalannya muncul sebagai pesan kegagalan biasa,
+bukan error compile.
 
 ### Priority 9 — Terminal bawaan (agent bisa curl/wget/bash/python)
 
@@ -370,7 +429,30 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   mengakhirinya hanya `browser_logout` (atau tombol logout di UI), yang menghapus cookie, cache,
   form data, dan history.
 * Alur: `browser_open` → `browser_read` (teks + daftar elemen `agx-N`) → `browser_click`
-  / `browser_type` (dengan `submit`) → `browser_scroll` → `browser_screenshot`.
+  / `browser_type` (dengan `submit`) / `browser_select` / `browser_press_key` → `browser_scroll`
+  → `browser_screenshot`.
+* **Aksi divalidasi, lalu diverifikasi.** Setiap aksi dijalankan lewat `BrowserScripts`, yang
+  menolak elemen yang hilang, berukuran nol, `disabled`, `readonly`, atau **tertutup elemen lain**
+  (uji `document.elementFromPoint` di titik tengahnya) — `el.click()` melewati hit-testing, jadi
+  tanpa uji itu sebuah overlay bisa menelan atau salah mengarahkan aksi. Setelah aksi, mesin
+  mengukur *fingerprint* halaman (URL, jumlah node, panjang teks, hash nilai semua field, dialog,
+  posisi scroll) sebelum dan sesudah; kalau identik, hasilnya diberi catatan jujur “tidak ada
+  perubahan halaman” alih-alih sukses palsu. Catatan: nilai hasil `evaluateJavascript` di Android
+  dikodekan JSON (string kembali **dengan** tanda kutip), dan seluruh token hasil kini dibaca
+  lewat satu jalur `stripQuotes` — sebelumnya perbandingan mentah membuat elemen yang tidak
+  ditemukan tetap dilaporkan “sukses”.
+* **Menunggu DOM, bukan menebak.** Sebelum aksi mesin memasang `MutationObserver`, lalu setelah
+  aksi menunggu sampai DOM berhenti berubah (dua sampel identik berturut-turut, batas 4 detik)
+  sebelum membaca halaman. Sebelumnya pembacaan terjadi seketika, sehingga SPA hampir selalu
+  terbaca dalam keadaan pra-render. `wait_ms` pada `browser_click` sekarang benar-benar dipakai
+  sebagai jeda tambahan (sebelumnya hanya ada di schema).
+* **Fallback berlapis untuk ref basi.** Kalau ref `agx-N` tidak lagi ada (DOM dirender ulang), mesin
+  mengambil snapshot baru dan mencari ulang elemen yang sama lewat deskriptor yang diingat
+  (tag/type/label, lalu value) — maksimal 3 percobaan — bukan menyerah atau menebak posisi.
+* Halaman utama kini juga memuat `[role=combobox]`, `[role=option]`, `[role=menuitem]`,
+  `[contenteditable=""]` dan `[tabindex]` (selain kontrol native), pengetikan memakai *prototype
+  value setter* agar framework React/Vue benar-benar melihat nilainya, dan `<select>` ditangani
+  `browser_select` (value → label persis → label parsial).
 * **Login**: pengguna menyimpan akun per situs di Pengaturan → Browser (password dienkripsi
   `SecretCipher`), `browser_login` mengisi form login secara generik dan melaporkan jujur bila
   formnya tidak dikenali.
@@ -380,6 +462,9 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 * `browser_screenshot` menyimpan PNG di workspace `output/`, dan `send_file_to_chat` mengirimkannya
   ke chat (gambar sebagai foto, tipe lain sebagai dokumen) — jadi agent bisa memperlihatkan hasil
   kerjanya di WhatsApp.
+* Tombol “Batalkan” pada serah terima kini benar-benar dilaporkan sebagai **gagal** ke agent
+  (`abandonUserAction` mengirim `false`); sebelumnya gate-nya sama dengan “Selesai” sehingga
+  pembatalan sampai ke agent sebagai sukses.
 * Browser automation **mati secara default**; menyalakannya di Pengaturan adalah bentuk persetujuan
   pengguna bahwa agent boleh mengendalikan sesi nyata.
 
@@ -397,8 +482,10 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   (tool-nya langsung dicabut dari registry) atau dihapus.
 * **Refleksi otomatis**: toggle di Pengaturan → Memori. Saat aktif, bridge membuat satu task
   terjadwal (`interval:N jam`, default 6 jam, maksimum 24) yang meminta agent meninjau pekerjaan
-  terakhir dan menyimpan 0–2 pelajaran lewat `reflect`/`save_skill`. Hasilnya dikirim ke percakapan
-  terakhir seperti task terjadwal lain. "Tidak ada pelajaran baru" adalah jawaban yang sah.
+  terakhir dan menyimpan 0–2 pelajaran lewat `reflect`/`save_skill`. Hasilnya **tidak** dikirim ke
+  chat WhatsApp — refleksi adalah pekerjaan internal agent, jadi laporannya tinggal di tab Tugas
+  (baris task-nya, `lastResult`) dan kandidat pelajarannya di Memori → Learning; yang dikirim ke
+  chat hanya task yang Anda minta sendiri. "Tidak ada pelajaran baru" adalah jawaban yang sah.
 * **Scheduler + WorkManager**: ticker 60 detik tetap jalan saat aplikasi hidup; `SchedulerWorker`
   menambahkan wake-up periodik 15 menit dari sistem, jadi task yang jatuh tempo saat proses mati
   tetap dieksekusi tanpa menunggu aplikasi dibuka.
@@ -409,17 +496,34 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
   dengan info "baris X–Y dari Z" dan petunjuk `offset` berikutnya; batas 16.000 karakter tetap ada
   sebagai pengaman kedua untuk file yang satu barisnya sangat panjang.
 
-### Keys pool (banyak API key) & unified search
+### Multi-provider & keys pool
 
-* **Keys pool.** Pengaturan → Model & Provider kini punya field **“Keys Pool (opsional)”**: satu
-  kunci per baris, dipakai bergiliran dengan API Key utama. Kunci awalnya dirotasi (round-robin)
-  supaya beban tidak selalu jatuh ke kunci pertama, dan bila sebuah kunci gagal karena hal yang
-  memang soal kunci — `401`/`402`/`403` (ditolak/tagihan) atau `429` (rate limit/quota) — percobaan
-  berikutnya otomatis memakai kunci lain. Kegagalan lain (5xx, timeout, 400) **tidak** menghabiskan
-  kunci: itu tetap ditangani retry/fallback Agent Loop seperti sebelumnya. Bila semua kunci habis,
-  pesan error menyebut kunci ke berapa yang gagal (`key 2/3`) sehingga penyebabnya jelas di log.
-  Kunci tambahan disimpan terenkripsi (`SecretCipher`) seperti kunci utama.
-* **Unified search** (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
+Pengaturan → Model & Provider berisi **daftar provider**; tiap baris punya base URL, model, dan key
+pool-nya sendiri. Dua lapis redundansi, dua-duanya terlihat di layar:
+
+* **Rotasi kunci di dalam satu provider.** Isi beberapa kunci (satu per baris). Kunci awalnya dirotasi
+  (round-robin) supaya beban tidak selalu jatuh ke kunci pertama; bila sebuah kunci gagal karena hal
+  yang memang soal kunci — `401`/`402`/`403` (ditolak/tagihan) atau `429` (rate limit/quota) —
+  percobaan berikutnya otomatis memakai kunci lain. Kegagalan lain (5xx, timeout, 400) **tidak**
+  menghabiskan kunci: itu tetap ditangani retry/fallback Agent Loop seperti sebelumnya. Bila semua
+  kunci habis, pesan error menyebut kunci ke berapa yang gagal (`key 2/3`) sehingga penyebabnya jelas
+  di log.
+* **Failover antar provider.** Satu provider ditandai **Aktif** dan itu yang menjawab. Setelah semua
+  kunci provider aktif habis, percobaan berikutnya pindah ke provider lain yang **usable** (aktif di
+  switch, punya base URL, punya minimal satu kunci) sesuai **urutan** di daftar — tombol ↑/↓ mengatur
+  urutan itu. Provider tanpa kunci sengaja dilewati, karena router hanya akan membuang satu percobaan
+  untuk request yang tidak mungkin berhasil.
+* **Tambah/edit/hapus** lewat dialog: ada preset gateway (OpenAI, OpenRouter, Groq, Gemini, DeepSeek)
+  supaya tidak perlu mengetik empat field, tombol **Uji** per provider untuk cek latency/AVAILABLE
+  tanpa mengubah pilihan aktif, dan switch untuk menonaktifkan provider tanpa menghapus kuncinya.
+* Kunci disimpan terenkripsi (`SecretCipher`), satu blob per provider. Install lama yang masih
+  single-provider otomatis dibuatkan satu baris pertama dari konfigurasinya saat aplikasi dibuka,
+  jadi tidak ada yang perlu diisi ulang.
+* Vision punya konfigurasi sendiri di bagian **Vision**, tetapi **tidak wajib diisi**: kalau
+  kunci vision kosong, media masuk dibaca memakai provider utama yang sedang aktif (berguna
+  kalau modelnya sudah multimodal, mis. `gpt-4o` atau Gemini).
+
+### Unified search (`search`, AUTO_SAFE, read-only, tanpa jaringan) mencari sekaligus di riwayat
   chat, memori jangka panjang, task terjadwal & sub-agent, file workspace, dan daftar tool. Ranking
   leksikal yang bisa dijelaskan: frasa yang cocok di judul > frasa di isi > kecocokan kata per kata,
   seri diputus oleh yang terbaru; query satu huruf sengaja tidak menghasilkan apa-apa. Tujuannya
@@ -463,15 +567,24 @@ Pengiriman media keluar (gambar/dokumen/audio/video, termasuk voice note) tersed
 * Dukungan 32-bit (`armeabi-v7a`) sudah di-build, tetapi hanya bisa dipastikan berjalan pada
   perangkat/emulator ARM 32-bit yang nyata — bukan pada perangkat arm64.
 * Media masuk: gambar & video dianalisis lewat provider vision yang Anda konfigurasi; dokumen teks
-  dibaca langsung; audio dicatat tetapi belum ditranskripsi (butuh provider STT). Bila API key vision
-  belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media.
+  dibaca langsung; stiker dibaca sebagai gambar; audio dicatat tetapi belum ditranskripsi (butuh
+  provider STT). PDF/dokumen biner belum bisa dibaca (dijawab terus terang). Bila API key vision
+  belum diisi, agent mengatakannya terus terang alih-alih mengarang isi media. Kirim video keluar
+  memakai refleksi ke binding (`Client.sendVideo` tidak bisa dipanggil langsung dari Kotlin),
+  sehingga perilakunya belum bisa diuji di perangkat.
 * Tool bawaan saat ini: `current_time`, `search` (unified search lintas memori/chat/task/file/tool),
   skill markdown (`list_skills`, `read_skill`, `save_skill`), 8 file tool (workspace-locked, `delete_path` = CONFIRM),
-  `web_search`, `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
+  `web_search` (keyless, 4 sumber: **Bing** → **DuckDuckGo** → **Mojeek** → **Wikipedia** sebagai
+  upaya terakhir yang dilabeli ensiklopedia; setiap percobaan dicatat sehingga "0 hasil" dan
+  "diblokir/anti-bot" tidak pernah tertukar — kalau semua diblokir, tool *gagal* dengan instruksi
+  "jangan mengarang, tawarkan web_fetch/ulangi nanti" alih-alih jawaban kosong yang membuat model
+  mengarang; seluruh pencarian dibatasi 25 detik supaya chat tidak menggantung; parser diuji unit di
+  `WebSearchScrapeTest` dan aturan kejujurannya di `WebSearchToolTest`), `web_fetch`, `remember`, `recall_memory`, `delegate_task`, `reflect`, `council`,
   `schedule_task`, `run_command` + `terminal_info` (shell perangkat), `send_file_to_chat`, dan —
   bila browser automation diaktifkan — `browser_open`, `browser_read`, `browser_click`,
-  `browser_type`, `browser_scroll`, `browser_screenshot`, `browser_login`, `browser_ask_user`,
-  `browser_logout` — plus tool `mcp__<server>__<tool>` untuk setiap server MCP yang Anda tambahkan.
+  `browser_type`, `browser_select`, `browser_press_key`, `browser_scroll`, `browser_screenshot`,
+  `browser_login`, `browser_ask_user`, `browser_logout` — plus tool `mcp__<server>__<tool>` untuk
+  setiap server MCP yang Anda tambahkan.
   Yang belum ada tinggal Linux sandbox penuh (proot/rootfs); rencana teknisnya ada di
   `DOC/riset-optimasi.md` bagian 3.1 dan dossier `DOC/reference/linux-sandbox/`.
 * Scheduler: ticker 60 detik saat aplikasi hidup + wake-up WorkManager tiap 15 menit saat proses
@@ -504,7 +617,10 @@ Sudah selesai: kontrol akses kontak, command chat, approval destruktif, memori j
 compact, subagent latar belakang, council & refleksi (termasuk refleksi otomatis terjadwal),
 scheduler + WorkManager, web tools, media WhatsApp masuk/keluar, terminal bawaan, browser
 automation + serah terima captcha/2FA, keys pool, unified search, skill markdown, MCP connector,
-`read_file` bertahap, probe model + metrik, dan build `optimized` (R8).
+`read_file` bertahap, probe model + metrik, build `optimized` (R8), multi-provider dengan failover,
+dan perombakan UI
+(sistem token warna/tipografi/bentuk, navigasi adaptif phone↔tablet, serta perbaikan bug
+frontend — alasan desainnya ada di `DOC/desain-ui.md`).
 
 Urutan yang disarankan berikutnya (alasan & estimasi biaya ada di `DOC/riset-optimasi.md`):
 uji APK `optimized` di HP → aktifkan R8 untuk `release` → sandbox Linux penuh (proot + Alpine

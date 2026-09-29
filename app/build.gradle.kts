@@ -71,11 +71,46 @@ android {
     compose = true
     buildConfig = true
   }
+  packaging {
+    jniLibs {
+      // A device picks the best matching lib/<abi>/ directory in the APK, so a library that ships
+      // its own 32-bit x86 build (androidx.graphics.path does) would leave an x86 directory
+      // without libgojni.so and an x86-only device would install the app and fail on the gateway.
+      // The ABI list of the binding is arm64-v8a / armeabi-v7a / x86_64, so x86 is dropped.
+      excludes += "lib/x86/**"
+    }
+  }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
   }
+}
+
+// AGP only takes the classes out of a local `.aar` file dependency: the native libraries under
+// `jni/<abi>/` never reach the APK. The result is an app that installs and runs but whose
+// WhatsApp gateway dies on the first call with UnsatisfiedLinkError ("libgojni.so not found") —
+// an 18 MB debug APK is exactly what that looks like, because the .so alone is ~26 MB per ABI.
+//
+// `libs/wagateway-jni/jni` is the AAR's own jni/ directory, unpacked next to it (see
+// app/libs/README.md and the "Unpack the AAR native libs" step in .github/workflows/build.yml),
+// and registered here so the .so files are packaged:
+//
+//   unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni
+//
+// A missing jniLibs directory is only a problem when the AAR is present, which the check below
+// turns into a readable message instead of an APK that fails on the device.
+android.sourceSets.getByName("main").jniLibs.srcDir("libs/wagateway-jni/jni")
+
+// Checked while configuring rather than in a task action: a `doFirst` hook would capture this
+// build script, and Gradle 9's configuration cache refuses to store script object references.
+if (file("libs/wagateway.aar").isFile && !file("libs/wagateway-jni/jni").isDirectory) {
+  throw GradleException(
+    "app/libs/wagateway.aar is present but its native libraries were never unpacked, so the " +
+      "APK would ship without libgojni.so and the gateway would fail with " +
+      "UnsatisfiedLinkError at runtime. Run:\n" +
+      "  unzip -o app/libs/wagateway.aar 'jni/*' -d app/libs/wagateway-jni"
+  )
 }
 
 // Some unused dependencies are kept commented out below instead of being removed,

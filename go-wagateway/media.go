@@ -219,9 +219,26 @@ func (c *Client) SendVideo(target string, data []byte, mimetype string, caption 
 	return string(sendResp.ID), nil
 }
 
+// stickerMatchesPayload reports whether an OnMedia payload is a sticker. Detecting it by type
+// alone is not enough: StickerMessage only agrees with the other inner messages on field 1 (URL)
+// and protobuf stores a field it finds with the wrong wire type as an unknown one instead of
+// failing, so a photo payload decodes into a StickerMessage just as happily. The mimetype is
+// what a sticker has and the others never fill — an image leaves it empty (its field 5 is a
+// varint), and an audio/document payload puts a hash or key in there, which never looks like
+// "image/...". That check is what keeps the sticker branch from swallowing ordinary media.
+func stickerMatchesPayload(payload []byte) bool {
+	var sticker waE2E.StickerMessage
+	if err := proto.Unmarshal(payload, &sticker); err != nil {
+		return false
+	}
+	return strings.HasPrefix(sticker.GetMimetype(), "image/") &&
+		(sticker.GetURL() != "" || len(sticker.GetMediaKey()) > 0)
+}
+
 // DownloadMedia downloads and decrypts the attachment of a received media message.
 // mediaMessageProto is the marshalled waE2E.ImageMessage / AudioMessage /
-// VideoMessage / DocumentMessage the Kotlin side got through OnMedia.
+// VideoMessage / DocumentMessage / StickerMessage (the INNER message, exactly what
+// handleEvent marshals) the Kotlin side received through OnMedia.
 func (c *Client) DownloadMedia(mediaMessageProto []byte) ([]byte, error) {
 	cli := c.cli
 	if cli == nil {
@@ -231,24 +248,41 @@ func (c *Client) DownloadMedia(mediaMessageProto []byte) ([]byte, error) {
 		return nil, errors.New("media payload cannot be empty")
 	}
 
-	var msg waE2E.Message
-	if err := proto.Unmarshal(mediaMessageProto, &msg); err != nil {
-		return nil, fmt.Errorf("invalid media payload: %w", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	switch {
-	case msg.GetImageMessage() != nil:
-		return cli.Download(ctx, msg.GetImageMessage())
-	case msg.GetAudioMessage() != nil:
-		return cli.Download(ctx, msg.GetAudioMessage())
-	case msg.GetVideoMessage() != nil:
-		return cli.Download(ctx, msg.GetVideoMessage())
-	case msg.GetDocumentMessage() != nil:
-		return cli.Download(ctx, msg.GetDocumentMessage())
-	default:
-		return nil, errors.New("no downloadable media found in payload")
+	// The payload is the marshalled INNER message (ImageMessage, AudioMessage, ...),
+	// NOT an outer waE2E.Message: unmarshalling it into waE2E.Message can never
+	// populate Message.ImageMessage (imageMessage is field 3 on Message, while the
+	// inner payload reuses ImageMessage's own field numbering). That mismatch is what
+	// made every received photo/file fail with "no downloadable media found in
+	// payload". So unmarshal into each concrete inner type and accept the first one
+	// that actually carries download info (URL or MediaKey).
+	//
+	// Stickers are checked first because they carry the download fields under their own
+	// numbering (see stickerMatchesPayload).
+	if stickerMatchesPayload(mediaMessageProto) {
+		var sticker waE2E.StickerMessage
+		if err := proto.Unmarshal(mediaMessageProto, &sticker); err == nil {
+			// whatsmeow maps StickerMessage to MediaImage, so animated stickers decrypt too.
+			return cli.Download(ctx, &sticker)
+		}
 	}
+	var img waE2E.ImageMessage
+	if err := proto.Unmarshal(mediaMessageProto, &img); err == nil && (img.GetURL() != "" || len(img.GetMediaKey()) > 0) {
+		return cli.Download(ctx, &img)
+	}
+	var aud waE2E.AudioMessage
+	if err := proto.Unmarshal(mediaMessageProto, &aud); err == nil && (aud.GetURL() != "" || len(aud.GetMediaKey()) > 0) {
+		return cli.Download(ctx, &aud)
+	}
+	var vid waE2E.VideoMessage
+	if err := proto.Unmarshal(mediaMessageProto, &vid); err == nil && (vid.GetURL() != "" || len(vid.GetMediaKey()) > 0) {
+		return cli.Download(ctx, &vid)
+	}
+	var doc waE2E.DocumentMessage
+	if err := proto.Unmarshal(mediaMessageProto, &doc); err == nil && (doc.GetURL() != "" || len(doc.GetMediaKey()) > 0) {
+		return cli.Download(ctx, &doc)
+	}
+	return nil, errors.New("no downloadable media found in payload")
 }

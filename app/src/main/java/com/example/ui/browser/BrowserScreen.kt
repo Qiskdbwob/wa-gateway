@@ -46,7 +46,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.ui.theme.AgentEmerald
+import com.example.ui.components.ConsoleCard
+import com.example.ui.theme.Spacing
+import com.example.ui.theme.status
 import com.example.wagateway.WaGatewayViewModel
 
 /**
@@ -121,33 +123,31 @@ fun BrowserScreen(
                 .padding(innerPadding)
         ) {
             pending?.let { request ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                        .testTag("browser_user_action_card"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF3C7))
+                // "The agent is blocked on you" is the same semantic status as an approval
+                // request on Beranda, so it uses the same warning tone instead of two literal
+                // amber hex values that only worked in one theme.
+                ConsoleCard(
+                    accent = MaterialTheme.status.warning,
+                    modifier = Modifier.padding(Spacing.md).testTag("browser_user_action_card")
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column {
                         Text(
-                            text = "🙋 Agent menunggu Anda",
+                            text = "Agent menunggu Anda",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF92400E)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(Spacing.xs))
                         Text(
                             text = request.instruction,
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF92400E)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Spacer(modifier = Modifier.height(Spacing.sm))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                             Button(
                                 onClick = { viewModel.completeBrowserUserAction() },
-                                modifier = Modifier.testTag("browser_user_action_done"),
-                                colors = ButtonDefaults.buttonColors(containerColor = AgentEmerald)
+                                modifier = Modifier.testTag("browser_user_action_done")
                             ) {
                                 Text("Selesai — lanjutkan agent")
                             }

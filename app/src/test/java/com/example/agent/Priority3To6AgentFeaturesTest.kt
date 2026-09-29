@@ -26,6 +26,7 @@ import com.example.agent.storage.entity.ScheduledTaskEntity
 import com.example.agent.subagent.SubAgentManager
 import com.example.agent.subagent.SubAgentSpec
 import com.example.agent.subagent.TaskResult
+import com.example.agent.tool.ScheduleTaskTool
 import com.example.agent.tool.ToolRegistry
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
@@ -37,6 +38,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Calendar
+import java.util.TimeZone
 
 /**
  * Priorities 3-6 — approvals, scheduler, chat commands and background subagents.
@@ -319,6 +322,126 @@ class Priority3To6AgentFeaturesTest {
 
         assertEquals(true, engine.runNow(task.id))
         assertEquals(1, runs)
+    }
+
+    /** Local wall-clock time as an epoch value, so the daily tests never depend on the CI zone. */
+    private fun atLocal(
+        zone: TimeZone,
+        year: Int,
+        month: Int,
+        day: Int,
+        hour: Int,
+        minute: Int
+    ): Long = Calendar.getInstance(zone).apply {
+        clear()
+        set(year, month - 1, day, hour, minute, 0)
+    }.timeInMillis
+
+    @Test
+    fun priority4_dailyScheduleLandsOnTheClockInsteadOfDriftingByInterval() = runBlocking {
+        val zone = TimeZone.getTimeZone("Asia/Jakarta")
+        val schedule = "daily:06:00,20:00"
+        fun nextAfter(from: Long): Long =
+            requireNotNull(SchedulerEngine.nextRunAt(schedule, from, zone)) { "tidak ada slot berikutnya" }
+
+        // The exact complaint: a 6-hour interval started at 21:15 gives 03:15/09:15/15:15,
+        // while a daily schedule keeps landing on 06:00 and 20:00.
+        assertEquals(atLocal(zone, 2026, 9, 28, 6, 0), nextAfter(atLocal(zone, 2026, 9, 28, 5, 30)))
+        assertEquals(atLocal(zone, 2026, 9, 28, 20, 0), nextAfter(atLocal(zone, 2026, 9, 28, 7, 0)))
+        assertEquals(atLocal(zone, 2026, 9, 29, 6, 0), nextAfter(atLocal(zone, 2026, 9, 28, 21, 15)))
+        // A slot that is exactly "now" has already fired, so the next one is used.
+        assertEquals(atLocal(zone, 2026, 9, 28, 20, 0), nextAfter(atLocal(zone, 2026, 9, 28, 6, 0)))
+        // An interval keeps its old meaning: N seconds from the previous run.
+        assertEquals(
+            atLocal(zone, 2026, 9, 28, 6, 0) + 21_600_000L,
+            requireNotNull(SchedulerEngine.nextRunAt("interval:21600", atLocal(zone, 2026, 9, 28, 6, 0), zone))
+        )
+    }
+
+    @Test
+    fun priority4_dailyScheduleIsNormalisedValidatedAndDescribed() {
+        assertEquals("daily:06:00,20:00", SchedulerEngine.normalize("daily:6:0,20:00"))
+        // The prefix is optional when the value is plainly a clock time.
+        assertEquals("daily:06:00,20:00", SchedulerEngine.normalize("06:00,20:00"))
+        assertEquals(listOf(360, 1200), SchedulerEngine.parseDailyMinutes("daily:20:00,06:00"))
+        assertEquals("setiap 6 jam", SchedulerEngine.describeSchedule("interval:21600"))
+        assertEquals(
+            "setiap hari pukul 06:00 & 20:00 (waktu perangkat)",
+            SchedulerEngine.describeSchedule("daily:06:00,20:00")
+        )
+
+        // Anything that is not a real clock time (or too many of them) must be rejected, so the
+        // model cannot claim a schedule the scheduler would never run.
+        assertNull(SchedulerEngine.parseDailyMinutes("daily:"))
+        assertNull(SchedulerEngine.parseDailyMinutes("daily:06"))
+        assertNull(SchedulerEngine.parseDailyMinutes("daily:24:00"))
+        assertNull(SchedulerEngine.parseDailyMinutes("daily:06:60"))
+        assertNull(SchedulerEngine.parseDailyMinutes("daily:06:00,tengah hari"))
+        assertNull(
+            SchedulerEngine.parseDailyMinutes("daily:01:00,02:00,03:00,04:00,05:00,06:00,07:00")
+        )
+        assertNull(SchedulerEngine.normalize("setiap hari"))
+        assertNull(SchedulerEngine.normalize("jam 12:00"))
+        assertNull(SchedulerEngine.nextRunAt("setiap hari", 1_000L, TimeZone.getTimeZone("UTC")))
+    }
+
+    @Test
+    fun priority4_dailyTaskFiresOncePerSlotAndStoresTheFirstFutureSlot() = runBlocking {
+        val dao = FakeScheduledTaskDao()
+        val runs = mutableListOf<String>()
+        val zone = TimeZone.getTimeZone("Asia/Jakarta")
+        // The engine resolves "06:00" in the zone it was given, so the test pins it instead of
+        // depending on whatever time zone the machine running the tests happens to use.
+        val engine = SchedulerEngine(
+            dao,
+            runTask = { task ->
+                runs.add(task.name)
+                "ok"
+            },
+            zone = zone
+        )
+
+        val created = engine.create("Berita pagi", "daily:6:0", "Ringkas berita", "628111")
+        assertEquals("daily:06:00", created.schedule)
+        assertNotNull(created.nextRunAt)
+
+        val now = atLocal(zone, 2026, 9, 28, 6, 0)
+        dao.upsert(dao.findById(created.id)!!.copy(nextRunAt = now))
+        engine.tick(now)
+
+        assertEquals(listOf("Berita pagi"), runs)
+        val stored = dao.findById(created.id)!!
+        assertEquals("COMPLETED", stored.lastStatus)
+        // Next run is the following 06:00, not now + 24 h from the tick.
+        assertEquals(atLocal(zone, 2026, 9, 29, 6, 0), requireNotNull(stored.nextRunAt))
+    }
+
+    @Test
+    fun priority4_scheduleTaskToolReportsTheStoredScheduleAndFailsLoudlyOnBadInput() = runBlocking {
+        val dao = FakeScheduledTaskDao()
+        val engine = SchedulerEngine(dao, runTask = { "ok" })
+        val tool = ScheduleTaskTool { name, schedule, prompt, conversationId ->
+            engine.create(name, schedule, prompt, conversationId)
+        }
+
+        val ok = tool.execute(
+            """{"name":"Berita Harian","schedule":"daily:06:00,20:00","prompt":"Ringkas berita"}"""
+        )
+        assertTrue(ok.success)
+        // The model gets the schedule that was really stored plus the next fire time, so it cannot
+        // "confirm" a schedule that does not exist.
+        assertTrue(ok.output.contains("setiap hari pukul 06:00 & 20:00"))
+        assertTrue(ok.output.contains("Eksekusi berikutnya:"))
+        val stored = dao.getAll().single()
+        assertEquals(stored.id, ok.metadata["scheduledTaskId"])
+        assertEquals("daily:06:00,20:00", stored.schedule)
+
+        val invalid = tool.execute(
+            """{"name":"Rusak","schedule":"tiap hari jam 6","prompt":"p"}"""
+        )
+        assertFalse(invalid.success)
+        assertTrue(invalid.error!!.contains("tidak valid"))
+        assertEquals(1, dao.getAll().size)
     }
 
     // ==========================================

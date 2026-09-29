@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Storage
@@ -38,7 +39,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,8 +65,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.agent.model.AgentSession
 import com.example.agent.storage.entity.MemoryItemEntity
+import com.example.ui.components.ConsoleCard
 import com.example.ui.components.EmptyStateCard
+import com.example.ui.components.ScreenHeader
 import com.example.ui.theme.AgentEmerald
+import com.example.ui.theme.Spacing
+import com.example.ui.theme.status
+import com.example.ui.theme.telemetry
 import com.example.wagateway.WaGatewayViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -81,19 +87,8 @@ private fun MemoryItemCard(
     actions: @Composable (() -> Unit)? = null
 ) {
     val itemTimeFormat = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("memory_item_${item.id}"),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = CardDefaults.outlinedCardBorder().copy(
-            brush = androidx.compose.ui.graphics.SolidColor(
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-            )
-        )
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+    ConsoleCard(modifier = Modifier.testTag("memory_item_${item.id}")) {
+        Column {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -107,12 +102,12 @@ private fun MemoryItemCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     actions?.invoke()
                     if (onDelete != null) {
-                        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                        IconButton(onClick = onDelete) {
                             Icon(
                                 imageVector = Icons.Default.DeleteOutline,
                                 contentDescription = "Hapus memori",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -129,20 +124,19 @@ private fun MemoryItemCard(
             Text(
                 text = item.source.ifBlank { "manual" } + " • " + itemTimeFormat.format(Date(item.updatedAt)) +
                     if (item.useCount > 0) " • dipakai ${item.useCount}x" else "",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                style = MaterialTheme.telemetry.label,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
 }
 
 enum class MemoryCategory(val label: String, val icon: ImageVector) {
-    SESSIONS("Sessions", Icons.Default.Chat),
-    EPISODIC("Episodic Memory", Icons.Default.History),
-    KNOWLEDGE("Knowledge", Icons.Default.Psychology),
-    SKILLS("Skills", Icons.Default.AutoAwesome),
-
-    LEARNING("Learning", Icons.Default.Lightbulb)
+    SESSIONS("Sesi", Icons.Default.Chat),
+    EPISODIC("Episodik", Icons.Default.History),
+    KNOWLEDGE("Pengetahuan", Icons.Default.Psychology),
+    SKILLS("Skill", Icons.Default.AutoAwesome),
+    LEARNING("Pembelajaran", Icons.Default.Lightbulb)
 }
 
 /**
@@ -183,41 +177,18 @@ fun MemoryScreen(
             .fillMaxSize()
             .padding(top = 12.dp)
     ) {
-        // Header
-        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text(
-                text = "Memory & Persistence",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Manajemen memori persisten di Room SQLite lokal",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        ScreenHeader(
+            title = "Memori",
+            subtitle = "Sesi, fakta, skill, dan pembelajaran agent",
+            modifier = Modifier.padding(horizontal = Spacing.lg)
+        )
 
         Spacer(modifier = Modifier.height(12.dp))
 
         // Persistence Overview Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            border = CardDefaults.outlinedCardBorder().copy(
-                brush = androidx.compose.ui.graphics.SolidColor(
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-                )
-            )
-        ) {
+        ConsoleCard(modifier = Modifier.padding(horizontal = Spacing.lg)) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -225,14 +196,13 @@ fun MemoryScreen(
                     Box(
                         modifier = Modifier
                             .size(40.dp)
-                            .clip(CircleShape)
-                            .background(AgentEmerald.copy(alpha = 0.15f)),
+                            .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Storage,
                             contentDescription = null,
-                            tint = AgentEmerald,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -273,7 +243,7 @@ fun MemoryScreen(
         ScrollableTabRow(
             selectedTabIndex = selectedTab.ordinal,
             edgePadding = 16.dp,
-            divider = { Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)) }
+            divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant) }
         ) {
             MemoryCategory.values().forEach { category ->
                 Tab(
@@ -304,21 +274,10 @@ fun MemoryScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             items(sessions, key = { it.sessionId }) { session ->
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("memory_session_${session.sessionId}"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    ),
-                                    border = CardDefaults.outlinedCardBorder().copy(
-                                        brush = androidx.compose.ui.graphics.SolidColor(
-                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                        )
-                                    )
+                                ConsoleCard(
+                                    modifier = Modifier.testTag("memory_session_${session.sessionId}")
                                 ) {
-                                    Column(modifier = Modifier.padding(14.dp)) {
+                                    Column {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -332,7 +291,7 @@ fun MemoryScreen(
                                                     modifier = Modifier
                                                         .size(8.dp)
                                                         .clip(CircleShape)
-                                                        .background(AgentEmerald)
+                                                        .background(MaterialTheme.colorScheme.primary)
                                                 )
                                                 Spacer(modifier = Modifier.width(8.dp))
                                                 Text(
@@ -368,8 +327,11 @@ fun MemoryScreen(
                                         ) {
                                             Text(
                                                 text = "Update: ${timeFormat.format(Date(session.updatedAt))}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                                style = MaterialTheme.telemetry.label,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                // Weight so a long timestamp can never push the row's
+                                                // actions off the edge at a large font scale.
+                                                modifier = Modifier.weight(1f)
                                             )
 
                                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -383,27 +345,21 @@ fun MemoryScreen(
                                                     Text("Buka Chat", style = MaterialTheme.typography.labelSmall)
                                                 }
 
-                                                IconButton(
-                                                    onClick = { sessionToClear = session },
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
+                                                IconButton(onClick = { sessionToClear = session }) {
                                                     Icon(
                                                         imageVector = Icons.Outlined.DeleteSweep,
-                                                        contentDescription = "Bersihkan",
+                                                        contentDescription = "Bersihkan riwayat",
                                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        modifier = Modifier.size(16.dp)
+                                                        modifier = Modifier.size(18.dp)
                                                     )
                                                 }
 
-                                                IconButton(
-                                                    onClick = { sessionToDelete = session },
-                                                    modifier = Modifier.size(32.dp)
-                                                ) {
+                                                IconButton(onClick = { sessionToDelete = session }) {
                                                     Icon(
                                                         imageVector = Icons.Default.DeleteOutline,
-                                                        contentDescription = "Hapus",
-                                                        tint = Color.Red.copy(alpha = 0.8f),
-                                                        modifier = Modifier.size(16.dp)
+                                                        contentDescription = "Hapus sesi",
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(18.dp)
                                                     )
                                                 }
                                             }
@@ -436,14 +392,8 @@ fun MemoryScreen(
                     // long fact being typed never pushes its own "Simpan Memori" button (or the
                     // field itself) out of the viewport — the bug reported on this tab.
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            )
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
+                        ConsoleCard {
+                            Column {
                                 Text(
                                     text = "Tambah fakta ke memori jangka panjang",
                                     style = MaterialTheme.typography.titleSmall,
@@ -493,16 +443,10 @@ fun MemoryScreen(
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surface
-                                )
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
+                            ConsoleCard {
+                                Column {
                                     Text(
-                                        text = "System Prompt & Persona",
+                                        text = "System prompt & persona",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.SemiBold
                                     )
@@ -530,7 +474,14 @@ fun MemoryScreen(
                 }
 
                 MemoryCategory.SKILLS -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // This tab used to be a plain Column inside a fillMaxSize Box: every card
+                    // past the first screenful was unreachable, because nothing here scrolled.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.md)
+                    ) {
                         // Skills live as markdown files in the workspace; the list is reloaded when
                         // this tab is opened so a file dropped in with `save_skill` shows up.
                         LaunchedEffect(Unit) { viewModel.refreshSkills() }
@@ -549,14 +500,8 @@ fun MemoryScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             skills.forEach { skill ->
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
+                                ConsoleCard {
+                                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                                         Text(
                                             text = skill.name,
                                             style = MaterialTheme.typography.bodyMedium,
@@ -571,7 +516,7 @@ fun MemoryScreen(
                                         }
                                         Text(
                                             text = skill.path,
-                                            style = MaterialTheme.typography.labelSmall,
+                                            style = MaterialTheme.telemetry.label,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
@@ -610,23 +555,17 @@ fun MemoryScreen(
                         )
 
                         runtimeStatus.forEach { (name, desc, active) ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surface
-                                )
-                            ) {
+                            ConsoleCard {
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.CheckCircle,
+                                        // The icon says active/not-active on its own, so the colour
+                                        // is a reinforcement rather than the only signal.
+                                        imageVector = if (active) Icons.Default.CheckCircle else Icons.Default.RemoveCircleOutline,
                                         contentDescription = null,
-                                        tint = if (active) AgentEmerald else Color.Gray,
+                                        tint = if (active) MaterialTheme.status.success.ink else MaterialTheme.status.neutral.ink,
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
@@ -702,7 +641,7 @@ fun MemoryScreen(
                         viewModel.deleteSession(s.sessionId)
                         sessionToDelete = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text("Hapus")
                 }

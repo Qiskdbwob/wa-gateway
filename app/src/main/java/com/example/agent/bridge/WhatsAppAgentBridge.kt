@@ -23,6 +23,9 @@ import com.example.agent.provider.ModelProvider
 import com.example.agent.provider.OpenAiCompatibleProvider
 import com.example.agent.provider.OpenAiVisionProvider
 import com.example.agent.provider.ProviderConfig
+import com.example.agent.provider.ProviderDescriptor
+import com.example.agent.provider.ProviderDirectory
+import com.example.agent.provider.defaultModelHttpClient
 import com.example.agent.provider.ProviderKeyPool
 import com.example.agent.provider.VisionProvider
 import com.example.agent.router.ModelProbeResult
@@ -37,6 +40,7 @@ import com.example.agent.storage.SecretCipher
 import com.example.agent.storage.agentIdFromJid
 import com.example.agent.storage.db.AgentDatabase
 import com.example.agent.storage.entity.AgentConfigEntity
+import com.example.agent.storage.entity.ProviderEntity
 import com.example.agent.storage.entity.AgentTaskEntity
 import com.example.agent.storage.entity.MemoryItemEntity
 import com.example.agent.subagent.SubAgentManager
@@ -60,9 +64,11 @@ import com.example.agent.tool.BrowserClickTool
 import com.example.agent.tool.BrowserClearSessionTool
 import com.example.agent.tool.BrowserLoginTool
 import com.example.agent.tool.BrowserOpenTool
+import com.example.agent.tool.BrowserPressKeyTool
 import com.example.agent.tool.BrowserReadTool
 import com.example.agent.tool.BrowserScreenshotTool
 import com.example.agent.tool.BrowserScrollTool
+import com.example.agent.tool.BrowserSelectTool
 import com.example.agent.tool.BrowserTypeTool
 import com.example.agent.tool.BrowserUserHelpTool
 import com.example.agent.tool.SendFileToChatTool
@@ -99,28 +105,98 @@ private const val THINKING_PLACEHOLDER = "> ⏳ Sedang berpikir..."
 /** WhatsApp drops the typing state after a few seconds, so refresh it while working. */
 private const val TYPING_REFRESH_MS = 8_000L
 
+/** Cap for the one-off "nomor ini belum di whitelist" notices kept per process. */
+private const val MAX_WHITELIST_NOTICES = 200
+
+/** Videos above this size are not sent inline to the vision model (base64 inflates them). */
+private const val MAX_INLINE_VIDEO_BYTES = 15 * 1024 * 1024
+
+/**
+ * Characters per outgoing WhatsApp bubble.
+ *
+ * WhatsApp's hard text limit is far higher (65,536), but long bubbles are exactly what gets
+ * truncated or rejected in practice — by the edit window, by the client, by copy-paste. Splitting a
+ * long answer into several bubbles keeps every character deliverable, which matters more than the
+ * "one bubble per answer" nicety.
+ */
+internal const val WHATSAPP_CHUNK_CHARS = 3_500
+
+/**
+ * Splits an answer into bubbles of at most [limit] characters **without losing a character**: the
+ * chunks concatenate back to the original text, since breaks are taken at existing boundaries.
+ *
+ * Break preference is paragraph → line → sentence → word, and a hard cut only when a single word is
+ * longer than the limit. Without this, a long report would either arrive as one bubble WhatsApp
+ * silently truncates or fail to send at all (the user then sees the "sedang berpikir" bubble stuck).
+ */
+internal fun splitForWhatsApp(text: String, limit: Int = WHATSAPP_CHUNK_CHARS): List<String> {
+    if (limit <= 0 || text.length <= limit) return listOf(text)
+    val chunks = mutableListOf<String>()
+    var start = 0
+    while (start < text.length) {
+        var end = minOf(start + limit, text.length)
+        if (end < text.length) {
+            val window = text.substring(start, end)
+            val breakAt = listOf("\n\n", "\n", ". ", "! ", "? ").firstNotNullOfOrNull { marker ->
+                val index = window.lastIndexOf(marker)
+                if (index > 0 && index >= window.length * MIN_CHUNK_FILL) index + marker.length else null
+            }
+            if (breakAt != null) end = start + breakAt
+        }
+        chunks += text.substring(start, end)
+        start = end
+    }
+    return chunks
+}
+
+/** A chunk should not be mostly empty just to reach a nicer break. */
+private const val MIN_CHUNK_FILL = 0.5
+
 class WhatsAppChannelAdapter(
-    private val gatewayManager: OutgoingMessageSender
+    private val gatewayManager: OutgoingMessageSender,
+    /**
+     * True when this turn is internal bookkeeping whose answer must stay in the app instead of
+     * being pushed into the user's chat. Defaults to "deliver everything".
+     */
+    private val suppressDelivery: suspend (AgentInput) -> Boolean = { false }
 ) : AgentChannelAdapter {
     override val channelName: String = "whatsapp"
 
     override suspend fun sendResponse(input: AgentInput, response: AgentResponse): Result<Unit> {
+        // The periodic self-review talks to itself: its report belongs in tab Tugas (lastResult)
+        // and its learning candidates in Memori → Learning, not in the user's chat as an
+        // unrequested "Pelajaran sudah dicatat" message. A user-created task is still delivered.
+        if (suppressDelivery(input)) {
+            return Result.success(Unit)
+        }
+
         if (response.content.isBlank()) {
             return Result.failure(IllegalArgumentException("Cannot send empty response to WhatsApp"))
         }
 
-        // Turn the "sedang berpikir..." placeholder into the real answer when possible, so
-        // the chat keeps one bubble instead of two. Edits can fail (WhatsApp only accepts
-        // them for a limited window), in which case we fall back to a normal send.
+        // A long answer goes out as several bubbles so no tail is ever dropped; a short one stays a
+        // single bubble as before.
+        val chunks = splitForWhatsApp(response.content)
+
+        // Turn the "sedang berpikir..." placeholder into the first chunk when possible, so the chat
+        // keeps one bubble. Edits can fail (WhatsApp only accepts them for a limited window), in
+        // which case we fall back to a normal send.
         val editTarget = input.metadata[EDIT_TARGET_KEY]
-        if (!editTarget.isNullOrBlank()) {
-            val edited = gatewayManager.editText(input.conversationId, editTarget, response.content)
-            if (edited.isSuccess) {
-                return Result.success(Unit)
+        val editedFirst = !editTarget.isNullOrBlank() &&
+            gatewayManager.editText(input.conversationId, editTarget, chunks.first()).isSuccess
+        if (!editedFirst) {
+            val firstChunk = gatewayManager.sendText(input.conversationId, chunks.first())
+            if (firstChunk.isFailure) {
+                return firstChunk.map { }
             }
         }
 
-        return gatewayManager.sendText(input.conversationId, response.content).map { }
+        // The rest are separate bubbles. A failure here is logged by the loop, but it must not
+        // report the whole answer as undelivered — the first chunk did arrive.
+        for (chunk in chunks.drop(1)) {
+            gatewayManager.sendText(input.conversationId, chunk)
+        }
+        return Result.success(Unit)
     }
 }
 
@@ -134,6 +210,31 @@ class WhatsAppAgentBridge private constructor(
         AgentDatabase.getInstance(context)
     )
 
+    private val providerDao = AgentDatabase.getInstance(context).providerDao()
+
+    /** One HTTP client shared by every provider instance (see [defaultModelHttpClient]). */
+    private val providerHttpClient = defaultModelHttpClient()
+
+    /**
+     * Multi-provider: every configured provider in display order, keys already decrypted. This is
+     * the single source of truth — the Room table feeds it, and the router targets, the effective
+     * [providerConfig] and the settings UI all derive from it.
+     */
+    private val _providers = MutableStateFlow<List<ProviderDescriptor>>(emptyList())
+    val providers: StateFlow<List<ProviderDescriptor>> = _providers.asStateFlow()
+
+    private val _activeProviderId = MutableStateFlow("")
+    val activeProviderId: StateFlow<String> = _activeProviderId.asStateFlow()
+
+    /** Per-provider instances, created once and reused by the router. */
+    private val providerInstances = mutableMapOf<String, OpenAiCompatibleProvider>()
+
+    /**
+     * Effective configuration of the *active* provider. Compaction, subagents, the probe and the
+     * legacy save path all ask "which base URL and model do I use right now" without caring which
+     * row that came from, so this stays as the one answer — refreshed whenever the list or the
+     * selection changes.
+     */
     val providerConfig = MutableStateFlow(
         ProviderConfig(
             baseUrl = "https://api.openai.com/v1",
@@ -146,8 +247,14 @@ class WhatsAppAgentBridge private constructor(
         "You are an intelligent, polite, and helpful AI assistant responding via WhatsApp. Keep responses concise, natural, and formatted nicely for WhatsApp."
     )
 
+    /**
+     * Instance used by loops that run without a router, and as the pre-router fallback. It reads
+     * the effective [providerConfig], which always points at the active provider — so even the
+     * router-less path follows the multi-provider selection.
+     */
     private val openAiProvider = OpenAiCompatibleProvider(
-        configProvider = { providerConfig.value }
+        configProvider = { providerConfig.value },
+        client = providerHttpClient
     )
     private val echoProvider = EchoTestProvider()
 
@@ -190,9 +297,6 @@ class WhatsAppAgentBridge private constructor(
     private val _whitelistMode = MutableStateFlow(false)
     val whitelistMode: StateFlow<Boolean> = _whitelistMode.asStateFlow()
 
-    private val _whitelistEnabled = MutableStateFlow(true)
-    val whitelistEnabled: StateFlow<Boolean> = _whitelistEnabled.asStateFlow()
-
     // --- Priority 2: long-term memory -------------------------------------------------
     private val memoryItemDao = AgentDatabase.getInstance(context).memoryItemDao()
     val memoryRepository = MemoryRepository(memoryItemDao)
@@ -223,6 +327,21 @@ class WhatsAppAgentBridge private constructor(
     val scheduler = SchedulerEngine(scheduledTaskDao, runTask = { task ->
         executeScheduledTask(task)
     })
+
+    /**
+     * True when the turn belongs to the periodic self-review.
+     *
+     * A scheduled task is delivered to WhatsApp only when the *user* asked for it; the reflection
+     * task is internal bookkeeping, so its answer is kept in the app (tab Tugas → the task row,
+     * plus Memori → Learning for the candidates it produced). The scheduler tags every scheduled
+     * turn with its task id, so the task name decides here — one rule, used by every channel.
+     */
+    private suspend fun isInternalScheduledTurn(input: AgentInput): Boolean {
+        if (input.metadata["source"] != "scheduler") return false
+        val taskId = input.metadata["scheduledTaskId"] ?: return false
+        val task = scheduledTaskDao.findById(taskId) ?: return false
+        return task.name == AUTO_REFLECT_TASK_NAME
+    }
 
     // --- Priority 6: subagents ---------------------------------------------------------
     private val agentTaskDao = AgentDatabase.getInstance(context).agentTaskDao()
@@ -345,7 +464,9 @@ class WhatsAppAgentBridge private constructor(
 
     init {
         // Register WhatsApp outgoing channel adapter to the Agent Loop
-        agentLoop.registerChannelAdapter(WhatsAppChannelAdapter(gatewayManager))
+        agentLoop.registerChannelAdapter(
+            WhatsAppChannelAdapter(gatewayManager) { input -> isInternalScheduledTurn(input) }
+        )
         // Model-call metrics feed the Developer panel (numbers, not just log lines).
         agentLoop.onModelCall = { metric ->
             _modelMetrics.value = (listOf(metric) + _modelMetrics.value).take(MAX_MODEL_METRICS)
@@ -392,8 +513,13 @@ class WhatsAppAgentBridge private constructor(
                     )
                     applyTerminalTools(toolRegistry, saved.terminalEnabled)
                     applyBrowserTools(toolRegistry, saved.browserEnabled)
+                    _activeProviderId.value = saved.activeProviderId
                     updateModelRouter()
                 }
+                // Multi-provider: turn a pre-multi-provider install into the first provider row
+                // (only while the table is still empty), then follow the rows from now on.
+                seedProvidersFromLegacy(saved)
+                scope.launch { observeProviders() }
                 // Approvals that expired while the app was closed.
                 approvalCoordinator.expireStale()
                 // Destructive tools are advertised only while approval routing is on.
@@ -455,10 +581,11 @@ class WhatsAppAgentBridge private constructor(
         registry.register(
             CouncilTool { topic, conversationId -> runCouncil(topic, conversationId) }
         )
-        // Priority 4 — scheduler.
+        // Priority 4 — scheduler. The tool gets the stored row back (id + schedule + next run),
+        // so it can report the real schedule instead of a summary.
         registry.register(
             ScheduleTaskTool { name, schedule, prompt, conversationId ->
-                scheduler.create(name, schedule, prompt, conversationId).id
+                scheduler.create(name, schedule, prompt, conversationId)
             }
         )
         // Terminal tools — the agent can run curl/wget/bash/python, with per-command approval.
@@ -500,6 +627,8 @@ class WhatsAppAgentBridge private constructor(
             registry.register(BrowserReadTool(browserAutomation))
             registry.register(BrowserClickTool(browserAutomation))
             registry.register(BrowserTypeTool(browserAutomation))
+            registry.register(BrowserSelectTool(browserAutomation))
+            registry.register(BrowserPressKeyTool(browserAutomation))
             registry.register(BrowserScrollTool(browserAutomation))
             registry.register(
                 BrowserScreenshotTool(browserAutomation) { bytes, fileName ->
@@ -511,6 +640,10 @@ class WhatsAppAgentBridge private constructor(
             registry.register(BrowserClearSessionTool(browserAutomation))
         } else {
             BROWSER_TOOL_NAMES.forEach { registry.unregister(it) }
+            // Tools added after the list above was written; kept explicit so disabling browser
+            // automation can never leave an opt-out tool registered.
+            registry.unregister("browser_select")
+            registry.unregister("browser_press_key")
         }
     }
 
@@ -531,8 +664,13 @@ class WhatsAppAgentBridge private constructor(
         "pdf" -> "application/pdf"
         "txt", "md", "log", "json", "csv" -> "text/plain"
         "zip" -> "application/zip"
-        "mp3", "ogg", "m4a", "opus" -> "audio/mpeg"
+        "mp3" -> "audio/mpeg"
+        // WhatsApp voice notes are Ogg/Opus; the container is what the client checks.
+        "ogg", "opus" -> "audio/ogg"
+        "m4a" -> "audio/mp4"
         "mp4" -> "video/mp4"
+        "webm" -> "video/webm"
+        "mov" -> "video/quicktime"
         else -> "application/octet-stream"
     }
 
@@ -571,10 +709,15 @@ class WhatsAppAgentBridge private constructor(
             )
         }
         val mime = guessMimeType(file.name)
-        val result = if (mime.startsWith("image/")) {
-            gatewayManager.sendImage(conversationId, bytes, mime, caption)
-        } else {
-            gatewayManager.sendDocument(conversationId, bytes, mime, file.name)
+        // Route by media type: WhatsApp only renders a playable video clip or an Ogg/Opus
+        // voice note when the file arrives through the matching API, so a generic document
+        // upload would lose that (and the SendAudio/SendVideo bindings would stay unusable).
+        val result = when {
+            mime.startsWith("image/") -> gatewayManager.sendImage(conversationId, bytes, mime, caption)
+            mime.startsWith("video/") -> gatewayManager.sendVideoMessage(conversationId, bytes, mime, caption)
+            mime.startsWith("audio/") ->
+                gatewayManager.sendAudio(conversationId, bytes, mime, voiceNote = mime == "audio/ogg")
+            else -> gatewayManager.sendDocument(conversationId, bytes, mime, file.name)
         }
         return if (result.isSuccess) {
             ToolResult(
@@ -587,30 +730,80 @@ class WhatsAppAgentBridge private constructor(
         }
     }
 
+    /**
+     * Rebuilds the router targets from the provider list: the active provider first, then every
+     * other usable provider in display order, then the optional echo fallback.
+     *
+     * This is the whole failover policy for multiple providers: the Agent Loop already walks its
+     * targets by priority and only gives up when the budget is spent, so "second provider" needs
+     * no new logic in the loop — it is simply the second target. Key rotation inside one provider
+     * stays where it was, in [OpenAiCompatibleProvider].
+     */
     private fun updateModelRouter() {
-        val targets = mutableListOf<ModelTarget>()
-        targets.add(
+        val ordered = ProviderDirectory.failoverOrder(_providers.value, _activeProviderId.value)
+        val targets = ordered.mapIndexed { index, descriptor ->
             ModelTarget(
-                id = "openai-primary",
-                provider = openAiProvider,
-                modelId = providerConfig.value.modelId,
-                priority = 0,
+                id = "provider-${descriptor.id}",
+                provider = instanceFor(descriptor),
+                modelId = descriptor.modelId,
+                priority = index,
                 enabled = true
             )
-        )
+        }.toMutableList()
+
         if (_useEchoFallback.value) {
             targets.add(
                 ModelTarget(
                     id = "echo-fallback",
                     provider = echoProvider,
                     modelId = "echo-model-v1",
-                    priority = 1,
+                    priority = targets.size,
                     enabled = true
                 )
             )
         }
         modelRouter.setTargets(targets)
+        refreshEffectiveProvider(ordered.firstOrNull())
     }
+
+    /**
+     * Points the shared "which model right now" state at the selected provider. Called whenever the
+     * list or the selection changes, so nothing has to re-derive it at the call site.
+     */
+    private fun refreshEffectiveProvider(active: ProviderDescriptor? = null) {
+        val current = active ?: ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value) ?: return
+        providerConfig.value = ProviderConfig(
+            baseUrl = current.baseUrl,
+            apiKey = current.keys.firstOrNull().orEmpty(),
+            modelId = current.modelId,
+            apiKeys = current.keys.drop(1)
+        )
+        agentLoop.agent = agentLoop.agent.copy(modelId = current.modelId)
+    }
+
+    /**
+     * One instance per provider row. The instance reads its row on every call, so editing a key or
+     * a base URL applies immediately without rebuilding the router.
+     */
+    private fun instanceFor(descriptor: ProviderDescriptor): OpenAiCompatibleProvider =
+        providerInstances.getOrPut(descriptor.id) {
+            OpenAiCompatibleProvider(
+                configProvider = {
+                    val row = _providers.value.firstOrNull { it.id == descriptor.id }
+                    if (row == null) {
+                        ProviderConfig(baseUrl = descriptor.baseUrl, modelId = descriptor.modelId)
+                    } else {
+                        ProviderConfig(
+                            baseUrl = row.baseUrl,
+                            apiKey = row.keys.firstOrNull().orEmpty(),
+                            modelId = row.modelId,
+                            apiKeys = row.keys.drop(1)
+                        )
+                    }
+                },
+                client = providerHttpClient
+            )
+        }
 
     fun setAutoReplyEnabled(enabled: Boolean) {
         _isAutoReplyEnabled.value = enabled
@@ -729,6 +922,172 @@ class WhatsAppAgentBridge private constructor(
         )
         updateModelRouter()
         persistConfig()
+        // The legacy single-provider save path now edits the active provider row too, so the old
+        // columns and the new table cannot drift apart.
+        scope.launch {
+            val active = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+                ?: return@launch
+            writeProvider(
+                active.copy(
+                    baseUrl = baseUrl.trim(),
+                    modelId = modelId.trim(),
+                    keys = ProviderDirectory.sanitizeKeys(listOf(apiKey) + ProviderKeyPool.parse(apiKeyPool))
+                )
+            )
+        }
+    }
+
+    // ==================================================================================
+    // Multi-provider (UI surface)
+    //
+    // Several providers can be configured, each with its own key pool. The active one serves
+    // requests; when its keys are exhausted the router moves on to the next usable provider, in
+    // the order shown in Settings. Everything below writes to Room and lets the table feed the
+    // in-memory list, so there is exactly one source of truth.
+    // ==================================================================================
+
+    /** Adds a provider; the first one added also becomes the active one. */
+    suspend fun addProvider(
+        label: String,
+        baseUrl: String,
+        modelId: String,
+        keysRaw: String
+    ): String {
+        val keys = ProviderDirectory.sanitizeKeys(ProviderKeyPool.parse(keysRaw))
+        val descriptor =
+            ProviderDescriptor(
+                id = ProviderDirectory.newProviderId(_providers.value.map { it.id }),
+                label = label.trim().ifBlank { "Provider ${_providers.value.size + 1}" },
+                baseUrl = baseUrl.trim().ifBlank { ProviderConfig().baseUrl },
+                modelId = modelId.trim().ifBlank { ProviderConfig().modelId },
+                keys = keys,
+                enabled = true,
+                sortOrder = ProviderDirectory.nextSortOrder(_providers.value)
+            )
+        writeProvider(descriptor)
+        if (_activeProviderId.value.isBlank()) setActiveProvider(descriptor.id)
+        val keyNote = if (keys.size > 1) "${keys.size} kunci (dirotasi otomatis)" else "${keys.size} kunci"
+        return "Provider \"${descriptor.label}\" ditambahkan dengan $keyNote."
+    }
+
+    /** Edits a provider in place; its keys become whatever the field now holds. */
+    suspend fun updateProvider(
+        id: String,
+        label: String,
+        baseUrl: String,
+        modelId: String,
+        keysRaw: String
+    ): String {
+        val existing = _providers.value.firstOrNull { it.id == id } ?: return "Provider tidak ditemukan."
+        val keys = ProviderDirectory.sanitizeKeys(ProviderKeyPool.parse(keysRaw))
+        writeProvider(
+            existing.copy(
+                label = label.trim().ifBlank { existing.label },
+                baseUrl = baseUrl.trim(),
+                modelId = modelId.trim(),
+                keys = keys
+            )
+        )
+        return "Provider \"${existing.displayLabel}\" diperbarui (${keys.size} kunci)."
+    }
+
+    suspend fun deleteProvider(id: String): String {
+        val existing = _providers.value.firstOrNull { it.id == id } ?: return "Provider tidak ditemukan."
+        providerInstances.remove(id)
+        providerDao.delete(id)
+        if (_activeProviderId.value == id) {
+            _activeProviderId.value = ""
+            persistConfig()
+        }
+        return "Provider \"${existing.displayLabel}\" dihapus."
+    }
+
+    /** Selects the provider that serves requests. */
+    fun setActiveProvider(id: String) {
+        _activeProviderId.value = id
+        persistConfig()
+        updateModelRouter()
+    }
+
+    suspend fun setProviderEnabled(id: String, enabled: Boolean) {
+        val existing = _providers.value.firstOrNull { it.id == id } ?: return
+        writeProvider(existing.copy(enabled = enabled))
+    }
+
+    /** Moves a provider one slot in the failover order. */
+    suspend fun moveProvider(id: String, delta: Int): String {
+        val reordered = ProviderDirectory.move(_providers.value, id, delta)
+        reordered.forEachIndexed { index, descriptor ->
+            if (descriptor.sortOrder != index) writeProvider(descriptor.copy(sortOrder = index))
+        }
+        return "Urutan provider diperbarui."
+    }
+
+    /** Writes a row, keeping the original creation timestamp on edits. */
+    private suspend fun writeProvider(descriptor: ProviderDescriptor) {
+        val existing = providerDao.getAll().firstOrNull { it.id == descriptor.id }
+        providerDao.upsert(
+            ProviderEntity(
+                id = descriptor.id,
+                label = descriptor.label,
+                baseUrl = descriptor.baseUrl,
+                modelId = descriptor.modelId,
+                keys = SecretCipher.encrypt(ProviderKeyPool.format(descriptor.keys)),
+                enabled = descriptor.enabled,
+                sortOrder = descriptor.sortOrder,
+                createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    private fun ProviderEntity.toDescriptor(): ProviderDescriptor =
+        ProviderDescriptor(
+            id = id,
+            label = label,
+            baseUrl = baseUrl,
+            modelId = modelId,
+            keys = ProviderDirectory.sanitizeKeys(ProviderKeyPool.parse(SecretCipher.decrypt(keys))),
+            enabled = enabled,
+            sortOrder = sortOrder
+        )
+
+    /**
+     * One-time upgrade path: an install that was configured before multi-provider existed becomes
+     * the first row, keys and all, so the user does not have to re-enter anything.
+     */
+    private suspend fun seedProvidersFromLegacy(saved: AgentConfigEntity?) {
+        if (providerDao.count() > 0) return
+        val primaryKey = SecretCipher.decrypt(saved?.apiKey.orEmpty())
+        val poolKeys = ProviderKeyPool.parse(SecretCipher.decrypt(saved?.apiKeys.orEmpty()))
+        val baseUrl = saved?.baseUrl.orEmpty()
+        if (baseUrl.isBlank() && primaryKey.isBlank() && poolKeys.isEmpty()) return
+        writeProvider(
+            ProviderDirectory.seedFromLegacy(
+                baseUrl = baseUrl,
+                modelId = saved?.modelId.orEmpty(),
+                keys = listOf(primaryKey) + poolKeys
+            )
+        )
+    }
+
+    /** Follows the provider table; every change re-derives the router targets. */
+    private suspend fun observeProviders() {
+        providerDao.observeAll().collect { rows ->
+            _providers.value = rows.map { it.toDescriptor() }
+            ensureActiveProvider()
+            updateModelRouter()
+        }
+    }
+
+    /** Keeps the selection pointing at a provider that exists and can answer. */
+    private fun ensureActiveProvider() {
+        val resolved = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+        val nextId = resolved?.id.orEmpty()
+        if (nextId != _activeProviderId.value) {
+            _activeProviderId.value = nextId
+            persistConfig()
+        }
     }
 
     // ==================================================================================
@@ -769,32 +1128,96 @@ class WhatsAppAgentBridge private constructor(
     /** How many distinct keys the provider may rotate through (1 = single key, no pool). */
     val apiKeyPoolSize: Int get() = providerConfig.value.keyPool().size
 
+    /** Probes whichever provider is currently selected (the Settings "Uji" button). */
     suspend fun probeCurrentModel(): ModelProbeResult {
-        val target = ModelTarget(
-            id = "openai-primary",
-            provider = openAiProvider,
-            modelId = providerConfig.value.modelId
-        )
-        return modelRouter.probeModel(target)
+        val active = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+            ?: return ModelProbeResult(
+                targetId = "none",
+                available = false,
+                latencyMs = 0,
+                error = "Belum ada provider aktif dengan API key"
+            )
+        return probeProvider(active)
     }
 
-    /** Resolves the current model provider for compact/summarize calls. */
-    private fun resolveProviderPair(): Pair<ModelProvider, String?> =
-        openAiProvider to providerConfig.value.modelId
+    /** Probes one provider by id; used by the per-provider test action. */
+    suspend fun probeProvider(id: String): ModelProbeResult {
+        val descriptor = _providers.value.firstOrNull { it.id == id }
+            ?: return ModelProbeResult(
+                targetId = id,
+                available = false,
+                latencyMs = 0,
+                error = "Provider tidak ditemukan"
+            )
+        return probeProvider(descriptor)
+    }
 
-    private fun visionProvider(): VisionProvider? {
-        val config = _visionConfig.value
-        return if (config.apiKey.isBlank()) {
-            null
-        } else if (config.isGeminiNative) {
-            GeminiVisionProvider(apiKey = config.apiKey, defaultModel = config.modelId)
-        } else {
-            OpenAiVisionProvider(
-                baseUrl = config.baseUrl,
-                apiKey = config.apiKey,
-                defaultModel = config.modelId
+    private suspend fun probeProvider(descriptor: ProviderDescriptor): ModelProbeResult {
+        if (descriptor.keys.isEmpty()) {
+            return ModelProbeResult(
+                targetId = "provider-${descriptor.id}",
+                available = false,
+                latencyMs = 0,
+                error = "Provider ini belum punya API key"
             )
         }
+        return modelRouter.probeModel(
+            ModelTarget(
+                id = "provider-${descriptor.id}",
+                provider = instanceFor(descriptor),
+                modelId = descriptor.modelId
+            )
+        )
+    }
+
+    /**
+     * Resolves the current model provider for compact/summarize calls and the other one-shot
+     * paths: the active provider's own instance, so those calls honour its base URL and key pool.
+     */
+    private fun resolveProviderPair(): Pair<ModelProvider, String?> {
+        val active = ProviderDirectory.resolveActive(_providers.value, _activeProviderId.value)
+            ?: return openAiProvider to providerConfig.value.modelId
+        return instanceFor(active) to active.modelId
+    }
+
+    /** The vision provider to use plus the model id that belongs to it. */
+    private data class VisionTarget(val provider: VisionProvider, val modelId: String)
+
+    /**
+     * Picks who reads the incoming media. A dedicated vision key wins; without one the active
+     * chat provider is reused, so a photo is understood out of the box whenever that provider
+     * can see images. The model id has to travel with the provider (the vision default and the
+     * chat default are different names), which is why both are returned together.
+     */
+    private fun visionTarget(): VisionTarget? {
+        val config = _visionConfig.value
+        if (config.apiKey.isNotBlank()) {
+            val provider = if (config.isGeminiNative) {
+                GeminiVisionProvider(apiKey = config.apiKey, defaultModel = config.modelId)
+            } else {
+                OpenAiVisionProvider(
+                    baseUrl = config.baseUrl,
+                    apiKey = config.apiKey,
+                    defaultModel = config.modelId
+                )
+            }
+            return VisionTarget(provider, config.modelId)
+        }
+
+        val active = providerConfig.value
+        if (active.apiKey.isBlank() || active.baseUrl.isBlank()) return null
+        val geminiNative = active.baseUrl.contains("generativelanguage.googleapis.com") &&
+            !active.baseUrl.contains("/openai")
+        val provider = if (geminiNative) {
+            GeminiVisionProvider(apiKey = active.apiKey, defaultModel = active.modelId)
+        } else {
+            OpenAiVisionProvider(
+                baseUrl = active.baseUrl,
+                apiKey = active.apiKey,
+                defaultModel = active.modelId
+            )
+        }
+        return VisionTarget(provider, active.modelId)
     }
 
     private fun persistConfig() {
@@ -808,6 +1231,7 @@ class WhatsAppAgentBridge private constructor(
                         apiKey = SecretCipher.encrypt(providerConfig.value.apiKey),
                         apiKeys = SecretCipher.encrypt(ProviderKeyPool.format(providerConfig.value.apiKeys)),
                         modelId = providerConfig.value.modelId,
+                        activeProviderId = _activeProviderId.value,
                         systemPrompt = systemPrompt.value,
                         whitelistMode = _whitelistMode.value,
                         longTermMemoryEnabled = _longTermMemoryEnabled.value,
@@ -863,12 +1287,18 @@ class WhatsAppAgentBridge private constructor(
         // Priority 1 — contact access control runs before ANY processing or reply.
         val contactId = agentIdFromJid(conversationId)
         scope.launch {
-            val decision = contactAccess.getDecision(contactId, _whitelistMode.value)
-            if (decision == ContactAccessRepository.Decision.BLOCK) {
+            val access = contactAccess.getAccess(contactId, _whitelistMode.value)
+            if (access.decision == ContactAccessRepository.Decision.BLOCK) {
+                val ruleLabel = access.rule?.mode ?: "none"
                 agentLoop.log(
                     "CONTACT_BLOCKED",
-                    "Pesan dari '$contactId' diblokir (whitelistMode=${_whitelistMode.value})."
+                    "Pesan dari '$contactId' diblokir (rule=$ruleLabel, " +
+                        "whitelistMode=${_whitelistMode.value})."
                 )
+                // A number blocked only because the whitelist is ON and it was never added
+                // would otherwise get no answer at all, which reads as a broken agent.
+                // Explicit blacklist/PENDING rules keep their silence.
+                if (access.rule == null) notifyNotWhitelisted(conversationId, contactId)
                 return@launch
             }
 
@@ -888,6 +1318,32 @@ class WhatsAppAgentBridge private constructor(
 
             processAgentTurn(conversationId, sender, text, messageId, timestamp, mediaInfo = null)
         }
+    }
+
+    /**
+     * Contacts already told that their number is not whitelisted. Kept per process so a
+     * stranger cannot make the agent answer every single message with the same notice.
+     */
+    private val notWhitelistNotified: MutableSet<String> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    /**
+     * Tells a sender why the agent stayed silent: their number is not in the whitelist.
+     * Sent at most once per contact per process; the owner adds numbers in
+     * Pengaturan → Mode whitelist.
+     */
+    private suspend fun notifyNotWhitelisted(conversationId: String, contactId: String) {
+        if (notWhitelistNotified.size >= MAX_WHITELIST_NOTICES) return
+        if (!notWhitelistNotified.add(contactId)) return
+        agentLoop.log(
+            "CONTACT_NOT_WHITELISTED",
+            "Memberi tahu '$contactId' bahwa nomornya belum ada di whitelist."
+        )
+        gatewayManager.sendText(
+            conversationId,
+            "🔐 Nomor ini ($contactId) belum ada di whitelist, jadi pesannya belum diteruskan ke agent.\n" +
+                "Tambahkan nomornya di Pengaturan → Mode whitelist supaya bisa mengobrol dengan agent."
+        )
     }
 
     /** Lazily builds the command handler (needs the loop and repos, all singletons). */
@@ -1224,9 +1680,17 @@ class WhatsAppAgentBridge private constructor(
 
         val contactId = agentIdFromJid(media.chat)
         scope.launch {
-            val decision = contactAccess.getDecision(contactId, _whitelistMode.value)
-            if (decision == ContactAccessRepository.Decision.BLOCK) {
-                agentLoop.log("CONTACT_BLOCKED", "Media dari '$contactId' diblokir.")
+            val access = contactAccess.getAccess(contactId, _whitelistMode.value)
+            if (access.decision == ContactAccessRepository.Decision.BLOCK) {
+                val ruleLabel = access.rule?.mode ?: "none"
+                agentLoop.log(
+                    "CONTACT_BLOCKED",
+                    "Media dari '$contactId' diblokir (rule=$ruleLabel, " +
+                        "whitelistMode=${_whitelistMode.value})."
+                )
+                if (access.rule == null) {
+                    notifyNotWhitelisted(media.chat.ifBlank { media.sender }, contactId)
+                }
                 return@launch
             }
 
@@ -1269,13 +1733,21 @@ class WhatsAppAgentBridge private constructor(
      * report that vision is not configured (no fake understanding).
      */
     private suspend fun analyzeMedia(media: WaMediaMessage): String = withContext(Dispatchers.IO) {
-        val data = try {
-            gatewayManager.downloadMedia(media.payload).getOrNull()
-        } catch (_: Exception) {
-            null
+        // The download result is kept so the failure reason reaches the user instead of a
+        // silent "(Gagal mengunduh media dari WhatsApp.)" with no way to tell what broke.
+        val download = try {
+            gatewayManager.downloadMedia(media.payload)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
+        val data = download.getOrNull()
         if (data == null) {
-            return@withContext "(Gagal mengunduh media dari WhatsApp.)"
+            val reason = download.exceptionOrNull()?.message ?: "penyebab tidak diketahui"
+            agentLoop.log(
+                "MEDIA_DOWNLOAD_FAILED",
+                "type=${media.mediaType}, mimetype=${media.mimetype}, error=$reason"
+            )
+            return@withContext "(Gagal mengunduh ${media.mediaType} dari WhatsApp: $reason. Coba kirim ulang file-nya.)"
         }
 
         // Documents: read as text directly (best effort, no vision needed).
@@ -1284,37 +1756,62 @@ class WhatsAppAgentBridge private constructor(
             return@withContext "Isi dokumen \"${media.filename}\":\n$text"
         }
 
-        if (media.mediaType != "image" && media.mediaType != "video") {
-            return@withContext "(Media ${media.mediaType} diterima; analisis otomatis untuk tipe ini belum tersedia.)"
+        // A photo or video shared "as a file" arrives as a document with an image/video MIME
+        // type; route it by MIME type so vision still runs instead of reporting "not
+        // supported" for media the agent can actually read.
+        val effectiveType = when {
+            media.mediaType != "document" -> media.mediaType
+            media.mimetype.startsWith("image/") -> "image"
+            media.mimetype.startsWith("video/") -> "video"
+            else -> "document"
         }
 
-        // Video: Gemini accepts video bytes inline only for small files; for WhatsApp
-        // videos we take the honest path and ask the vision model about the available
-        // metadata unless it is a small file (Gemini inline limit ~20 MB).
-        val provider = visionProvider()
-            ?: return@withContext "(Belum ada model vision dikonfigurasi. Isi API key vision di Pengaturan agar saya bisa melihat ${media.mediaType}.)"
+        if (effectiveType != "image" && effectiveType != "video") {
+            return@withContext if (media.mediaType == "document") {
+                val documentType = media.mimetype.ifBlank { "tanpa tipe" }
+                "(Dokumen $documentType diterima, tapi agent belum bisa " +
+                    "membaca format ini. Kirim isinya sebagai teks, atau screenshot halamannya " +
+                    "kalau berupa gambar.)"
+            } else {
+                "(Media ${media.mediaType} diterima; analisis otomatis untuk tipe ini belum tersedia.)"
+            }
+        }
+
+        // Video bytes go to the model inline (base64), so an oversized clip would fail with
+        // an unhelpful provider error; refuse honestly instead.
+        if (effectiveType == "video" && data.size > MAX_INLINE_VIDEO_BYTES) {
+            return@withContext "(Video ${data.size / (1024 * 1024)} MB terlalu besar untuk dianalisis " +
+                "langsung (batas ${MAX_INLINE_VIDEO_BYTES / (1024 * 1024)} MB). Kirim klip yang lebih " +
+                "pendek atau screenshot bagian pentingnya.)"
+        }
+
+        // Vision runs on the bytes downloaded above; video is sent inline (base64), which is
+        // why the size gate above already refused anything too large to send.
+        val target = visionTarget()
+            ?: return@withContext "(Belum ada model yang bisa melihat ${effectiveType} ini. Isi API key " +
+                "vision di Pengaturan, atau pakai provider utama yang modelnya mendukung gambar.)"
 
         val prompt = if (media.caption.isNotBlank()) {
-            "Jelaskan ${media.mediaType} ini secara ringkas dan jawab kebutuhan pengguna. Caption pengguna: \"${media.caption}\""
+            "Jelaskan ${effectiveType} ini secara ringkas dan jawab kebutuhan pengguna. Caption pengguna: \"${media.caption}\""
         } else {
-            "Jelaskan ${media.mediaType} ini secara ringkas: apa isinya, objek/teks penting, dan kesimpulannya."
+            "Jelaskan ${effectiveType} ini secara ringkas: apa isinya, objek/teks penting, dan kesimpulannya."
         }
 
         try {
             withTimeout(90_000L) {
-                provider.describeImage(
+                target.provider.describeImage(
                     com.example.agent.provider.ImageUnderstandingRequest(
                         prompt = prompt,
                         imagesBase64 = listOf(Base64.encodeToString(data, Base64.NO_WRAP)),
                         mimeType = media.mimetype.ifBlank { "image/jpeg" },
-                        modelId = _visionConfig.value.modelId
+                        modelId = target.modelId
                     )
                 ).getOrElse { e ->
-                    "(Analisis ${media.mediaType} gagal: ${e.message})"
+                    "(Analisis ${effectiveType} gagal: ${e.message})"
                 }
             }
         } catch (e: Exception) {
-            "(Analisis ${media.mediaType} gagal: ${e.message})"
+            "(Analisis ${effectiveType} gagal: ${e.message})"
         }
     }
 

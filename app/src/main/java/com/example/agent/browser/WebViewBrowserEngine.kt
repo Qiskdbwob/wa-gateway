@@ -12,11 +12,13 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -47,6 +49,17 @@ import kotlin.coroutines.resume
  * or the agent calls `browser_logout` / [clearSession], which wipes cookies, cache and form
  * data. [typeText] with `submit = true` and every [click] flush the jar to disk immediately so a
  * process kill right after login cannot lose it.
+ *
+ * Accuracy model (three things, in order):
+ *  1. **Validate before acting.** Every action goes through [BrowserScripts], which refuses to
+ *     touch an element that is gone, zero-sized, disabled, readonly, or covered by another
+ *     element at its own centre (`document.elementFromPoint`). A programmatic `click()` bypasses
+ *     hit-testing, so without that check an overlay could swallow or misroute the action.
+ *  2. **Wait for the page, don't guess.** After an action the engine arms a `MutationObserver`
+ *     and polls until the DOM stops changing ([waitForSettle]) instead of reading the page
+ *     immediately — the previous behaviour read a pre-render DOM on every SPA.
+ *  3. **Verify after acting.** A URL + DOM + form-value fingerprint is taken before and after, so
+ *     a click that changed nothing is reported as `changed = false` rather than a silent success.
  *
  * Reliability: WebView renders in its own process, and Android may kill that renderer under
  * memory pressure. When that happens the view can never be reused, so [onRenderProcessGone]
@@ -80,6 +93,14 @@ class WebViewBrowserEngine(
     /** Last URL asked for, so a recreated renderer can restore the session it was on. */
     @Volatile
     private var lastLoadedUrl: String? = null
+
+    /**
+     * Elements of the last snapshot, keyed by ref. When a ref goes stale because the page
+     * re-rendered, the remembered descriptor (tag/type/label/value) lets [resolveRefAgain] find
+     * the same control under its new ref instead of failing outright.
+     */
+    @Volatile
+    private var lastDescriptors: Map<String, BrowserElement> = emptyMap()
 
     override fun isReady(): Boolean = webView != null
 
@@ -125,6 +146,26 @@ class WebViewBrowserEngine(
             ) {
                 if (request?.isForMainFrame == true) {
                     lastError = "Gagal memuat halaman: ${error?.description ?: "unknown error"}"
+                    pageLoaded?.complete(Unit)
+                }
+            }
+
+            /**
+             * A 4xx/5xx for the *main frame* is a failure even though `onPageFinished` still
+             * fires: without this, an anti-bot wall or a 404 page looked like a successful load
+             * and the agent then "read" an error page as if it were content. Sub-resource errors
+             * are ignored on purpose (they are normal and would otherwise poison the state).
+             */
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    val code = errorResponse?.statusCode ?: 0
+                    val reason = errorResponse?.reasonPhrase.orEmpty()
+                    lastError = "Halaman mengembalikan HTTP ${code}${if (reason.isBlank()) "" else " $reason"}" +
+                        " — kemungkinan diblokir atau tidak ditemukan, bukan halaman yang diminta."
                     pageLoaded?.complete(Unit)
                 }
             }
@@ -190,23 +231,38 @@ class WebViewBrowserEngine(
         val gate = CompletableDeferred<Unit>()
         pageLoaded = gate
         lastError = null
+        lastDescriptors = emptyMap()
 
         lastLoadedUrl = normalized
         withContext(mainDispatcher) { view.loadUrl(normalized) }
         withTimeoutOrNull(PAGE_TIMEOUT_MS) { gate.await() }
+        // `onPageFinished` fires for the *document*, not for the app that renders into it: give
+        // SPA hydration a chance to settle before the first snapshot is taken.
+        waitForSettle(OPEN_SETTLE_TIMEOUT_MS)
 
         val currentUrl = withContext(mainDispatcher) { view.url ?: normalized }
         val error = lastError
         return if (error != null) {
             BrowserActionResult(ok = false, url = currentUrl, error = error)
         } else {
-            BrowserActionResult(ok = true, url = currentUrl, detail = "Halaman dimuat.")
+            BrowserActionResult(
+                ok = true,
+                url = currentUrl,
+                detail = "Halaman dimuat.",
+                changed = true
+            )
         }
     }
 
     override suspend fun snapshot(maxChars: Int): BrowserSnapshot {
-        val raw = evaluateJs(SNAPSHOT_SCRIPT)
+        val raw = evaluateJs(BrowserScripts.SNAPSHOT)
             ?: return BrowserSnapshot("", "", "", emptyList(), "Browser belum membuka halaman apa pun.")
+        return decodeSnapshot(raw, maxChars)
+            ?: BrowserSnapshot("", "", "", emptyList(), "Gagal membaca halaman (format tidak dikenali).")
+    }
+
+    /** Parses a snapshot payload and remembers the descriptors for later re-resolution. */
+    private fun decodeSnapshot(raw: String, maxChars: Int): BrowserSnapshot? {
         return try {
             val json = JSONObject(raw)
             val elements = mutableListOf<BrowserElement>()
@@ -223,6 +279,7 @@ class WebViewBrowserEngine(
                     )
                 }
             }
+            lastDescriptors = elements.associateBy { it.ref }
             BrowserSnapshot(
                 url = json.optString("url"),
                 title = json.optString("title"),
@@ -230,109 +287,146 @@ class WebViewBrowserEngine(
                 elements = elements,
                 error = json.optString("error").takeIf { it.isNotBlank() && it != "undefined" }
             )
-        } catch (e: Exception) {
-            BrowserSnapshot("", "", "", emptyList(), "Gagal membaca halaman: ${e.message}")
+        } catch (_: Exception) {
+            null
         }
+    }
+
+    /** Re-runs the snapshot only to refresh refs, discarding the text (used after a stale ref). */
+    private suspend fun refreshElements(): List<BrowserElement>? {
+        val raw = evaluateJs(BrowserScripts.SNAPSHOT) ?: return null
+        return decodeSnapshot(raw, 1)?.elements
+    }
+
+    /**
+     * Re-finds the element behind a stale [ref] by matching its remembered descriptor against a
+     * fresh snapshot. Returns the new ref, or null when nothing matches confidently.
+     */
+    private suspend fun resolveRefAgain(ref: String): String? {
+        val remembered = lastDescriptors[ref] ?: return null
+        val candidates = refreshElements() ?: return null
+        return BrowserScripts.matchDescriptor(remembered, candidates)
+    }
+
+    /**
+     * Shared action path for every ref-based action:
+     *
+     *  1. fingerprint the page,
+     *  2. arm the mutation counter and run the action,
+     *  3. on a stale ref, wait briefly and re-resolve the element by descriptor, then retry,
+     *  4. on success wait for the DOM to settle and fingerprint again to report `changed`.
+     *
+     * Failures that are *not* a stale ref (disabled, occluded, readonly, …) stop immediately with
+     * an honest message; retrying those would just repeat the same wrong action.
+     */
+    private suspend fun runLocating(
+        detail: String,
+        ref: String,
+        persistOnSuccess: Boolean,
+        buildScript: (String) -> String
+    ): BrowserActionResult {
+        val before = fingerprint()
+        var target = ref
+        var attempt = 1
+        while (attempt <= MAX_LOCATE_ATTEMPTS) {
+            evaluateJs(BrowserScripts.ARM_SETTLE)
+            val token = BrowserScripts.stripQuotes(evaluateJs(buildScript(target)))
+                ?: return BrowserActionResult(false, error = "Browser belum siap.")
+            if (token == "ok") {
+                if (persistOnSuccess) persistCookies()
+                waitForSettle()
+                val after = fingerprint()
+                return BrowserActionResult(
+                    ok = true,
+                    url = currentUrl(),
+                    detail = detail,
+                    changed = BrowserScripts.changedBetween(before, after)
+                )
+            }
+            if (token == "not-found" && attempt < MAX_LOCATE_ATTEMPTS) {
+                attempt += 1
+                delay(LOCATE_RETRY_DELAY_MS)
+                // The page may still be re-rendering: re-snapshot and look the element up again by
+                // what it looked like (tag/type/label/value) instead of giving up.
+                resolveRefAgain(target)?.let { target = it }
+                continue
+            }
+            // Anything else (disabled, occluded, readonly, error …) is not a staleness problem, so
+            // repeating the same action would only repeat the same wrong attempt.
+            return BrowserActionResult(false, url = currentUrl(), error = BrowserScripts.describeToken(token, ref))
+        }
+        return BrowserActionResult(
+            false,
+            url = currentUrl(),
+            error = BrowserScripts.describeToken("not-found", ref)
+        )
     }
 
     override suspend fun click(ref: String): BrowserActionResult {
         val safe = safeRef(ref) ?: return BrowserActionResult(false, error = "Ref elemen tidak valid: $ref")
-        val result = evaluateJs(
-            """
-            (function(){
-              var el = document.querySelector('[data-agx-ref="$safe"]');
-              if (!el) return 'not-found';
-              try { el.scrollIntoView({block:'center'}); } catch (e) {}
-              el.focus();
-              el.click();
-              return 'ok';
-            })()
-            """.trimIndent()
-        )
-        return when (result) {
-            null -> BrowserActionResult(false, error = "Browser belum siap.")
-            "not-found" -> BrowserActionResult(
-                false,
-                error = "Elemen $ref tidak ada lagi di halaman. Ambil snapshot baru (browser_read) lalu ulangi."
-            )
-            else -> {
-                // A click can complete a login or an "remember me" consent: make sure the cookie
-                // jar hits disk before anything can kill the process.
-                persistCookies()
-                BrowserActionResult(true, url = currentUrl(), detail = "Elemen $ref diklik.")
-            }
+        // A click can complete a login or an "remember me" consent: make sure the cookie jar hits
+        // disk before anything can kill the process.
+        return runLocating("Elemen $ref diklik.", safe, persistOnSuccess = true) { target ->
+            BrowserScripts.click(target)
         }
     }
 
     override suspend fun typeText(ref: String, text: String, submit: Boolean): BrowserActionResult {
         val safe = safeRef(ref) ?: return BrowserActionResult(false, error = "Ref elemen tidak valid: $ref")
-        val literal = JSONObject.quote(text)
-        val result = evaluateJs(
-            """
-            (function(){
-              var el = document.querySelector('[data-agx-ref="$safe"]');
-              if (!el) return 'not-found';
-              try { el.scrollIntoView({block:'center'}); } catch (e) {}
-              el.focus();
-              if (el.isContentEditable) { el.innerText = $literal; }
-              else { el.value = $literal; }
-              el.dispatchEvent(new Event('input', {bubbles:true}));
-              el.dispatchEvent(new Event('change', {bubbles:true}));
-              var s = $submit;
-              if (s) {
-                var form = el.form;
-                if (form) {
-                  if (typeof form.requestSubmit === 'function') { form.requestSubmit(); }
-                  else { form.submit(); }
-                } else {
-                  var opts = {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true};
-                  el.dispatchEvent(new KeyboardEvent('keydown', opts));
-                  el.dispatchEvent(new KeyboardEvent('keyup', opts));
-                }
-              }
-              return 'ok';
-            })()
-            """.trimIndent()
-        )
-        return when (result) {
-            null -> BrowserActionResult(false, error = "Browser belum siap.")
-            "not-found" -> BrowserActionResult(
-                false,
-                error = "Elemen $ref tidak ada lagi di halaman. Ambil snapshot baru (browser_read) lalu ulangi."
-            )
-            else -> {
-                // Submitting a form is the moment a session cookie is written (login, 2FA
-                // confirmation, "remember this device"): persist it right away.
-                if (submit) persistCookies()
-                BrowserActionResult(
-                    true,
-                    url = currentUrl(),
-                    detail = if (submit) "Teks dikirim ke $ref dan form disubmit." else "Teks diketik ke $ref."
-                )
-            }
+        val literal = BrowserScripts.jsStringLiteral(text)
+        val detail = if (submit) "Teks diketik ke $ref dan form disubmit." else "Teks diketik ke $ref."
+        // Submitting a form is the moment a session cookie is written (login, 2FA confirmation,
+        // "remember this device"), so persist immediately in that case only.
+        return runLocating(detail, safe, persistOnSuccess = submit) { target ->
+            BrowserScripts.type(target, literal, submit)
         }
     }
 
+    override suspend fun selectOption(ref: String, value: String): BrowserActionResult {
+        val safe = safeRef(ref) ?: return BrowserActionResult(false, error = "Ref elemen tidak valid: $ref")
+        val literal = BrowserScripts.jsStringLiteral(value)
+        return runLocating("\"$value\" dipilih pada $ref.", safe, persistOnSuccess = false) { target ->
+            BrowserScripts.select(target, literal)
+        }
+    }
+
+    override suspend fun pressKey(key: String): BrowserActionResult {
+        val normalized = BrowserScripts.normalizeKey(key)
+            ?: return BrowserActionResult(
+                false,
+                error = "Tombol \"$key\" tidak didukung. Pakai salah satu dari: " +
+                    BrowserScripts.SUPPORTED_KEYS.joinToString(", ") + "."
+            )
+        val before = fingerprint()
+        evaluateJs(BrowserScripts.ARM_SETTLE)
+        val token = BrowserScripts.stripQuotes(
+            evaluateJs(BrowserScripts.pressKey(BrowserScripts.jsStringLiteral(normalized)))
+        ) ?: return BrowserActionResult(false, error = "Browser belum siap.")
+        if (token != "ok") {
+            return BrowserActionResult(false, url = currentUrl(), error = BrowserScripts.describeToken(token, ""))
+        }
+        waitForSettle()
+        val after = fingerprint()
+        return BrowserActionResult(
+            ok = true,
+            url = currentUrl(),
+            detail = "Tombol $normalized ditekan pada elemen yang sedang fokus.",
+            changed = BrowserScripts.changedBetween(before, after)
+        )
+    }
+
     override suspend fun scroll(direction: String, amountPx: Int): BrowserActionResult {
-        val delta = when (direction.lowercase()) {
-            "up" -> -amountPx
-            "top" -> Int.MIN_VALUE
-            "bottom" -> Int.MAX_VALUE
-            else -> amountPx
-        }
-        val script = if (delta == Int.MIN_VALUE) {
-            "window.scrollTo(0,0); 'ok'"
-        } else if (delta == Int.MAX_VALUE) {
-            "window.scrollTo(0, document.body.scrollHeight); 'ok'"
-        } else {
-            "window.scrollBy(0, $delta); 'ok'"
-        }
-        val result = evaluateJs(script)
-        return if (result == null) {
-            BrowserActionResult(false, error = "Browser belum siap.")
-        } else {
-            BrowserActionResult(true, url = currentUrl(), detail = "Halaman digulir ($direction).")
-        }
+        val before = fingerprint()
+        val result = evaluateJs(BrowserScripts.scroll(direction, amountPx))
+            ?: return BrowserActionResult(false, error = "Browser belum siap.")
+        if (result.isBlank()) return BrowserActionResult(false, error = "Browser belum siap.")
+        val after = fingerprint()
+        return BrowserActionResult(
+            ok = true,
+            url = currentUrl(),
+            detail = "Halaman digulir ($direction).",
+            changed = BrowserScripts.changedBetween(before, after)
+        )
     }
 
     override suspend fun screenshot(): ByteArray? = withContext(mainDispatcher) {
@@ -394,6 +488,7 @@ class WebViewBrowserEngine(
             webView?.clearHistory()
             webView?.loadUrl("about:blank")
         }
+        lastDescriptors = emptyMap()
     }
 
     /** Releases the view. The cookie jar stays on disk, so the next session is still logged in. */
@@ -401,10 +496,39 @@ class WebViewBrowserEngine(
         val view = webView ?: return
         webView = null
         pageLoaded = null
+        lastDescriptors = emptyMap()
         try {
             view.post { view.destroy() }
         } catch (_: Exception) {
             // Already destroyed
+        }
+    }
+
+    /** One fingerprint sample; empty when the page cannot be read yet. */
+    private suspend fun fingerprint(): String =
+        BrowserScripts.stripQuotes(evaluateJs(BrowserScripts.FINGERPRINT)).orEmpty()
+
+    /**
+     * Blocks until the DOM stops changing, or [timeoutMs] passes. The observer is armed by the
+     * caller (before the action) so the counter already includes the mutation the action caused;
+     * two identical samples in a row mean the page has settled.
+     */
+    private suspend fun waitForSettle(timeoutMs: Long = SETTLE_TIMEOUT_MS) {
+        if (webView == null) return
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var last = ""
+        var stable = 0
+        while (System.currentTimeMillis() < deadline) {
+            delay(SETTLE_POLL_MS)
+            val sample = BrowserScripts.stripQuotes(evaluateJs(BrowserScripts.SETTLE_SAMPLE)).orEmpty()
+            if (sample.isEmpty()) return
+            if (sample == last) {
+                stable += 1
+                if (stable >= SETTLE_STABLE_SAMPLES) return
+            } else {
+                stable = 0
+                last = sample
+            }
         }
     }
 
@@ -423,10 +547,7 @@ class WebViewBrowserEngine(
         }
     }
 
-    private fun safeRef(ref: String): String? {
-        val trimmed = ref.trim().lowercase()
-        return if (Regex("^[a-z0-9\\-]{1,24}$").matches(trimmed)) trimmed else null
-    }
+    private fun safeRef(ref: String): String? = BrowserScripts.safeRef(ref)
 
     private fun normalizeUrl(url: String): String? {
         val trimmed = url.trim()
@@ -452,39 +573,18 @@ class WebViewBrowserEngine(
         /** How often a dead renderer is rebuilt automatically before the page is declared broken. */
         private const val MAX_RENDERER_RECOVERIES = 3
 
-        /** Collects the readable text plus every interactive element, tagged for later calls. */
-        private val SNAPSHOT_SCRIPT = """
-            (function(){
-              try {
-                var nodes = document.querySelectorAll('a,button,input,textarea,select,[role=button],[contenteditable=true]');
-                var out = [];
-                var i = 0;
-                for (var k = 0; k < nodes.length && i < 80; k++) {
-                  var el = nodes[k];
-                  var r = el.getBoundingClientRect();
-                  if (r.width <= 0 || r.height <= 0) continue;
-                  var ref = 'agx-' + i;
-                  try { el.setAttribute('data-agx-ref', ref); } catch (e) {}
-                  var label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.innerText || el.value || el.name || '';
-                  out.push({
-                    ref: ref,
-                    tag: (el.tagName || '').toLowerCase(),
-                    type: (el.getAttribute('type') || ''),
-                    label: ('' + label).replace(/\s+/g, ' ').trim().slice(0, 90),
-                    value: ('' + (el.value || '')).slice(0, 90)
-                  });
-                  i++;
-                }
-                return {
-                  url: location.href,
-                  title: document.title || '',
-                  text: (document.body ? (document.body.innerText || '') : '').slice(0, 20000),
-                  elements: out
-                };
-              } catch (e) {
-                return { url: location.href, title: '', text: '', elements: [], error: '' + e };
-              }
-            })()
-        """.trimIndent()
+        /** How long a fresh document is allowed to keep mutating before the first snapshot. */
+        private const val OPEN_SETTLE_TIMEOUT_MS = 3_000L
+
+        /** Upper bound on waiting for the DOM to stop changing after an action. */
+        private const val SETTLE_TIMEOUT_MS = 4_000L
+
+        /** Interval between settle samples; two identical samples in a row end the wait. */
+        private const val SETTLE_POLL_MS = 250L
+        private const val SETTLE_STABLE_SAMPLES = 2
+
+        /** How many times an action is attempted while re-resolving a stale ref. */
+        private const val MAX_LOCATE_ATTEMPTS = 3
+        private const val LOCATE_RETRY_DELAY_MS = 350L
     }
 }

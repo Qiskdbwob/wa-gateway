@@ -78,62 +78,77 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 			return
 		}
 
-		sender := evt.Info.Sender.ToNonAD().String()
-		chat := evt.Info.Chat.ToNonAD().String()
+		sender := c.resolveJIDForRules(evt.Info.Sender)
+		chat := c.resolveJIDForRules(evt.Info.Chat)
 		// Info.ID is forwarded so Kotlin can mark the message as read (centang biru)
 		// and, later on, edit it once the agent has produced a reply.
 		msgID := string(evt.Info.ID)
 		ts := evt.Info.Timestamp.Unix()
 
+		// WhatsApp wraps real content in envelope messages: a chat with "pesan sementara"
+		// (disappearing messages) arrives as EphemeralMessage, "lihat sekali" media as
+		// ViewOnceMessage(V2), and a document with a caption as DocumentWithCaptionMessage.
+		// Reading only the outer message made those chats look empty to the agent — no text
+		// and no media at all — so unwrap first.
+		msg := unwrapMessage(evt.Message)
+
 		// Media support: image/audio/video/document are marshalled and handed to Kotlin
-		// as raw protobuf bytes; DownloadMedia(nil-bytes-not-required) unmarshals them
-		// again for the actual download. This keeps the boundary to simple types.
-		if evt.Message != nil && evt.Message.GetImageMessage() != nil {
-			if payload, err := proto.Marshal(evt.Message.GetImageMessage()); err == nil {
+		// as raw protobuf bytes; DownloadMedia on the Kotlin side unmarshals the same INNER
+		// message type again for the actual download. Marshalling the outer Message instead
+		// is what broke every photo/document analysis with "no downloadable media found in
+		// payload". This keeps the boundary to simple types ([]byte, string, int64).
+		if img := msg.GetImageMessage(); img != nil {
+			if payload, err := proto.Marshal(img); err == nil {
 				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "image",
-					evt.Message.GetImageMessage().GetMimetype(),
-					evt.Message.GetImageMessage().GetCaption(),
-					"",
-					msgID, ts, payload)
+					img.GetMimetype(), img.GetCaption(), "", msgID, ts, payload)
 			}
 			return
 		}
-		if evt.Message != nil && evt.Message.GetAudioMessage() != nil {
-			if payload, err := proto.Marshal(evt.Message.GetAudioMessage()); err == nil {
+		if aud := msg.GetAudioMessage(); aud != nil {
+			if payload, err := proto.Marshal(aud); err == nil {
 				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "audio",
-					evt.Message.GetAudioMessage().GetMimetype(),
-					"",
-					"",
-					msgID, ts, payload)
+					aud.GetMimetype(), "", "", msgID, ts, payload)
 			}
 			return
 		}
-		if evt.Message != nil && evt.Message.GetVideoMessage() != nil {
-			if payload, err := proto.Marshal(evt.Message.GetVideoMessage()); err == nil {
+		if vid := msg.GetVideoMessage(); vid != nil {
+			if payload, err := proto.Marshal(vid); err == nil {
 				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "video",
-					evt.Message.GetVideoMessage().GetMimetype(),
-					evt.Message.GetVideoMessage().GetCaption(),
-					"",
-					msgID, ts, payload)
+					vid.GetMimetype(), vid.GetCaption(), "", msgID, ts, payload)
 			}
 			return
 		}
-		if evt.Message != nil && evt.Message.GetDocumentMessage() != nil {
-			if payload, err := proto.Marshal(evt.Message.GetDocumentMessage()); err == nil {
+		// Video note ("pesan video bulat") carries a plain VideoMessage, so it downloads
+		// exactly like a regular video.
+		if ptv := msg.GetPtvMessage(); ptv != nil {
+			if payload, err := proto.Marshal(ptv); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "video",
+					ptv.GetMimetype(), "", "", msgID, ts, payload)
+			}
+			return
+		}
+		if doc := msg.GetDocumentMessage(); doc != nil {
+			if payload, err := proto.Marshal(doc); err == nil {
 				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "document",
-					evt.Message.GetDocumentMessage().GetMimetype(),
-					evt.Message.GetDocumentMessage().GetCaption(),
-					evt.Message.GetDocumentMessage().GetFileName(),
-					msgID, ts, payload)
+					doc.GetMimetype(), doc.GetCaption(), doc.GetFileName(), msgID, ts, payload)
+			}
+			return
+		}
+		// A sticker is an image (WebP, or WebP-based Lottie when animated) and downloads through
+		// the same image path, so it is forwarded as image media instead of disappearing.
+		if sticker := msg.GetStickerMessage(); sticker != nil {
+			if payload, err := proto.Marshal(sticker); err == nil {
+				c.listener.OnMedia(sender, chat, evt.Info.IsGroup, "image",
+					stickerMimetype(sticker), "", "", msgID, ts, payload)
 			}
 			return
 		}
 
 		var text string
-		if evt.Message != nil {
-			text = evt.Message.GetConversation()
-			if text == "" && evt.Message.GetExtendedTextMessage() != nil {
-				text = evt.Message.GetExtendedTextMessage().GetText()
+		if msg != nil {
+			text = msg.GetConversation()
+			if text == "" && msg.GetExtendedTextMessage() != nil {
+				text = msg.GetExtendedTextMessage().GetText()
 			}
 		}
 		if text == "" {
@@ -142,6 +157,70 @@ func (c *Client) handleEvent(rawEvt interface{}) {
 
 		c.listener.OnMessage(sender, chat, evt.Info.IsGroup, text, msgID, ts)
 	}
+}
+
+// unwrapMessage digs through the envelope messages WhatsApp puts around the real content
+// and returns the message the agent actually cares about. Envelopes nest (a view-once
+// message can arrive wrapped in an ephemeral one), hence the loop; the depth cap keeps a
+// malformed payload from spinning forever. A message without an envelope is returned as is.
+func unwrapMessage(msg *waE2E.Message) *waE2E.Message {
+	for depth := 0; depth < 4 && msg != nil; depth++ {
+		switch {
+		case msg.GetViewOnceMessage() != nil:
+			msg = msg.GetViewOnceMessage().GetMessage()
+		case msg.GetViewOnceMessageV2() != nil:
+			msg = msg.GetViewOnceMessageV2().GetMessage()
+		case msg.GetViewOnceMessageV2Extension() != nil:
+			msg = msg.GetViewOnceMessageV2Extension().GetMessage()
+		case msg.GetEphemeralMessage() != nil:
+			msg = msg.GetEphemeralMessage().GetMessage()
+		case msg.GetDocumentWithCaptionMessage() != nil:
+			msg = msg.GetDocumentWithCaptionMessage().GetMessage()
+		// Animated (Lottie) and audio stickers arrive inside an envelope of their own; opening
+		// it is what lets the sticker branch below see the real StickerMessage.
+		case msg.GetLottieStickerMessage() != nil:
+			msg = msg.GetLottieStickerMessage().GetMessage()
+		case msg.GetAudioStickerMessage() != nil:
+			msg = msg.GetAudioStickerMessage().GetMessage()
+		default:
+			return msg
+		}
+	}
+	return msg
+}
+
+// stickerMimetype reports the container of a sticker, defaulting to WebP because that is what
+// WhatsApp always uses; a sticker without a mimetype would otherwise reach the vision provider
+// untyped.
+func stickerMimetype(sticker *waE2E.StickerMessage) string {
+	if mimetype := sticker.GetMimetype(); mimetype != "" {
+		return mimetype
+	}
+	return "image/webp"
+}
+
+// resolveJIDForRules maps a LID JID (...@lid) to the phone-number JID when the session
+// store knows the pair. Access rules and replies on the Kotlin side are keyed by phone
+// digits, and WhatsApp now delivers many direct chats with LIDs — without the mapping a
+// whitelisted contact could still arrive as an unknown @lid and be blocked. Unmapped LIDs
+// are returned unchanged so delivery keeps working.
+func (c *Client) resolveJIDForRules(jid types.JID) string {
+	if c.cli == nil || c.cli.Store == nil {
+		return jid.String()
+	}
+	jid = jid.ToNonAD()
+	// LID JIDs (hidden user + hosted) carry no phone digits usable by the Kotlin-side
+	// rule matching; map them back to the phone-number JID when the store knows the pair.
+	if jid.Server != types.HiddenUserServer && jid.Server != types.HostedLIDServer {
+		return jid.String()
+	}
+	if pn, err := c.cli.Store.LIDs.GetPNForLID(context.Background(), jid); err == nil && !pn.IsEmpty() {
+		pn = pn.ToNonAD()
+		if pn.Server != types.HiddenUserServer && pn.Server != types.HostedLIDServer {
+			return pn.String()
+		}
+	}
+	return jid.String()
 }
 
 // Connect establishes the connection to WhatsApp. If a linked session exists in the

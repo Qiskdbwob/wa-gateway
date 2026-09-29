@@ -4,9 +4,14 @@ import com.example.agent.memory.MemoryRepository
 import com.example.agent.model.Tool
 import com.example.agent.model.ToolPermission
 import com.example.agent.model.ToolResult
+import com.example.agent.scheduler.SchedulerEngine
 import com.example.agent.storage.entity.MemoryItemEntity
+import com.example.agent.storage.entity.ScheduledTaskEntity
 import com.example.agent.subagent.SubAgentSpec
 import kotlinx.coroutines.currentCoroutineContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
 
@@ -224,24 +229,40 @@ class ReflectTool(private val memory: MemoryRepository) : Tool {
 
 /**
  * Creates a scheduled (cron-like) task that re-prompts the agent periodically and sends
- * the answer to a chat. schedule format: "interval:SECONDS".
+ * the answer to a chat.
+ *
+ * Two schedule formats, both accepted by [SchedulerEngine]:
+ *
+ *   - "daily:06:00,20:00" — fixed times of day (device clock). Use this whenever the user names
+ *     clock times ("jam 6 pagi dan 8 malam"); it is the only form that can land on 06:00/20:00.
+ *   - "interval:3600" — every N seconds counted from the last run.
+ *
+ * The output repeats the schedule that was really stored plus the next fire time, so the model
+ * has a factual basis to report and cannot honestly claim a schedule that was never created.
  */
 class ScheduleTaskTool(
-    private val creator: suspend (name: String, schedule: String, prompt: String, conversationId: String) -> String
+    private val creator: suspend (name: String, schedule: String, prompt: String, conversationId: String) -> ScheduledTaskEntity
 ) : Tool {
 
     override val id: String = "builtin.schedule_task"
     override val name: String = "schedule_task"
     override val description: String =
-        "Membuat tugas terjadwal (berulang) yang menjalankan prompt agent secara periodik " +
-            "dan mengirim hasilnya ke chat ini. Format jadwal: \"interval:<detik>\", " +
-            "misal \"interval:3600\" = tiap 1 jam, \"interval:86400\" = tiap hari."
+        "Membuat tugas terjadwal (berulang) yang menjalankan prompt agent secara periodik dan " +
+            "mengirim hasilnya ke chat ini. Format jadwal: \"daily:HH:MM\" untuk jam pasti waktu " +
+            "perangkat (mis. \"daily:06:00,20:00\" = tiap hari pukul 6 pagi dan 8 malam), atau " +
+            "\"interval:<detik>\" untuk jeda tetap (mis. \"interval:3600\" = tiap 1 jam). " +
+            "WAJIB memanggil tool ini sebelum bilang jadwal dibuat: jangan pernah mengaku tugas " +
+            "sudah dijadwalkan tanpa hasil sukses dari tool ini, dan laporkan jadwal serta waktu " +
+            "eksekusi berikutnya apa adanya dari keluaran tool."
     override val inputSchema: String = """
         {
           "type": "object",
           "properties": {
             "name": { "type": "string", "description": "Nama tugas, misal 'Laporan cuaca pagi'." },
-            "schedule": { "type": "string", "description": "\"interval:<detik>\" — jeda antar eksekusi, minimum 60 detik." },
+            "schedule": {
+              "type": "string",
+              "description": "\"daily:HH:MM[,HH:MM...]\" untuk jam pasti waktu perangkat (mis. \"daily:06:00,20:00\"), atau \"interval:<detik>\" untuk jeda tetap (mis. \"interval:3600\", minimum 60 detik)."
+            },
             "prompt": { "type": "string", "description": "Prompt yang dijalankan agent pada setiap eksekusi." }
           },
           "required": ["name", "schedule", "prompt"]
@@ -258,28 +279,33 @@ class ScheduleTaskTool(
             return ToolResult(success = false, output = "", error = "Argumen 'name', 'schedule', dan 'prompt' wajib diisi.")
         }
 
-        val seconds = schedule.removePrefix("interval:").trim().toLongOrNull()
-            ?: return ToolResult(
-                success = false,
-                output = "",
-                error = "Format jadwal tidak valid. Gunakan \"interval:<detik>\", contoh interval:3600."
-            )
-        if (seconds < com.example.agent.storage.entity.ScheduledTaskEntity.MIN_INTERVAL_SECONDS) {
+        // Validation lives in the scheduler (one implementation of the schedule grammar); an
+        // invalid expression comes back as a failed tool result, never as a claimed success.
+        val task = try {
+            creator(name, schedule, prompt, currentToolConversation())
+        } catch (e: IllegalArgumentException) {
+            return ToolResult(success = false, output = "", error = e.message ?: "Jadwal tidak valid.")
+        } catch (e: Exception) {
             return ToolResult(
                 success = false,
                 output = "",
-                error = "Interval minimum ${com.example.agent.storage.entity.ScheduledTaskEntity.MIN_INTERVAL_SECONDS} detik."
+                error = "Tugas terjadwal gagal dibuat: ${e.message ?: e.javaClass.simpleName}"
             )
         }
 
-        val conversationId = currentToolConversation()
-        val id = creator(name, "interval:$seconds", prompt, conversationId)
+        val nextRun = task.nextRunAt?.let { formatRunAt(it) } ?: "belum dijadwalkan"
         return ToolResult(
             success = true,
-            output = "Tugas terjadwal '$name' dibuat (setiap $seconds detik). Kelola di tab Tugas → Scheduled.",
-            metadata = mapOf("scheduledTaskId" to id)
+            output = "Tugas terjadwal '${task.name}' dibuat (id ${task.id}).\n" +
+                "Jadwal tersimpan: ${SchedulerEngine.describeSchedule(task.schedule)}\n" +
+                "Eksekusi berikutnya: $nextRun\n" +
+                "Kelola di tab Tugas → Terjadwal.",
+            metadata = mapOf("scheduledTaskId" to task.id)
         )
     }
+
+    private fun formatRunAt(timestamp: Long): String =
+        SimpleDateFormat("EEE, d MMM yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))
 }
 
 // =============================================================================

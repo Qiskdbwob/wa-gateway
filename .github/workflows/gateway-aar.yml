@@ -56,6 +56,12 @@ jobs:
         working-directory: go-wagateway
         run: go build ./...
 
+      # The pure helpers (message unwrapping, media payload handling) are cheap to test and
+      # easy to break, so they must not rely on a device to be verified.
+      - name: Test Go module
+        working-directory: go-wagateway
+        run: go test ./...
+
       - name: Bind Android AAR
         working-directory: go-wagateway
         run: |

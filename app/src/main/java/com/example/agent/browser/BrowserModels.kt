@@ -28,7 +28,14 @@ data class BrowserActionResult(
     val ok: Boolean,
     val url: String = "",
     val detail: String = "",
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * Whether the page observably changed because of this action. Compared through
+     * [BrowserScripts.changedBetween] over a URL + DOM + form-value fingerprint, so a click that
+     * did nothing is reported honestly instead of as a silent success. An unavailable fingerprint
+     * reports `true` ("tidak diketahui"), never a false "tidak ada perubahan".
+     */
+    val changed: Boolean = false
 )
 
 /** A site login the user handed to the agent so it can sign in without typing secrets again. */
@@ -53,6 +60,13 @@ interface BrowserEngine {
     suspend fun snapshot(maxChars: Int = 8_000): BrowserSnapshot
     suspend fun click(ref: String): BrowserActionResult
     suspend fun typeText(ref: String, text: String, submit: Boolean): BrowserActionResult
+
+    /** Picks an option in a native `<select>` by value, exact label, then partial label. */
+    suspend fun selectOption(ref: String, value: String): BrowserActionResult
+
+    /** Sends one key (Enter/Escape/Tab/arrows) to the focused element — dismiss modals, submit. */
+    suspend fun pressKey(key: String): BrowserActionResult
+
     suspend fun scroll(direction: String, amountPx: Int): BrowserActionResult
     suspend fun screenshot(): ByteArray?
     suspend fun currentUrl(): String

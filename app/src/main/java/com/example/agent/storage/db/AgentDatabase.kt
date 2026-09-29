@@ -14,6 +14,7 @@ import com.example.agent.storage.dao.ApprovalRequestDao
 import com.example.agent.storage.dao.ContactRuleDao
 import com.example.agent.storage.dao.McpServerDao
 import com.example.agent.storage.dao.MemoryItemDao
+import com.example.agent.storage.dao.ProviderDao
 import com.example.agent.storage.dao.ScheduledTaskDao
 import com.example.agent.storage.entity.AgentConfigEntity
 import com.example.agent.storage.entity.AgentMessageEntity
@@ -23,6 +24,7 @@ import com.example.agent.storage.entity.ApprovalRequestEntity
 import com.example.agent.storage.entity.ContactRuleEntity
 import com.example.agent.storage.entity.McpServerEntity
 import com.example.agent.storage.entity.MemoryItemEntity
+import com.example.agent.storage.entity.ProviderEntity
 import com.example.agent.storage.entity.ScheduledTaskEntity
 
 @Database(
@@ -35,9 +37,10 @@ import com.example.agent.storage.entity.ScheduledTaskEntity
         ApprovalRequestEntity::class,
         ScheduledTaskEntity::class,
         AgentTaskEntity::class,
-        McpServerEntity::class
+        McpServerEntity::class,
+        ProviderEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AgentDatabase : RoomDatabase() {
@@ -51,6 +54,7 @@ abstract class AgentDatabase : RoomDatabase() {
     abstract fun scheduledTaskDao(): ScheduledTaskDao
     abstract fun agentTaskDao(): AgentTaskDao
     abstract fun mcpServerDao(): McpServerDao
+    abstract fun providerDao(): ProviderDao
 
     companion object {
         @Volatile
@@ -169,6 +173,26 @@ abstract class AgentDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 -> v6: multi-provider support. `providers` holds one row per provider (base URL,
+         * model, encrypted key blob, order); `agent_configs.activeProviderId` remembers which one
+         * is selected. Both default to "nothing configured", and an existing single-provider
+         * install is seeded from its old columns at startup, so nothing breaks on upgrade.
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `agent_configs` ADD COLUMN `activeProviderId` TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `providers` (`id` TEXT NOT NULL, `label` TEXT NOT NULL, " +
+                        "`baseUrl` TEXT NOT NULL, `modelId` TEXT NOT NULL, `keys` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_providers_sortOrder` ON `providers` (`sortOrder`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_providers_enabled` ON `providers` (`enabled`)")
+            }
+        }
+
         fun getInstance(context: Context): AgentDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -176,7 +200,7 @@ abstract class AgentDatabase : RoomDatabase() {
                     AgentDatabase::class.java,
                     "agent_database.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 .also { INSTANCE = it }
             }

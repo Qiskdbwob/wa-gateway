@@ -80,6 +80,9 @@ import com.example.ui.components.ConnectionStatusBadge
 import com.example.ui.components.SectionHeader
 import com.example.ui.theme.AgentEmerald
 import com.example.ui.theme.AgentWhatsAppGreen
+import com.example.ui.theme.TerminalInk
+import com.example.ui.theme.TerminalInkMuted
+import com.example.ui.theme.TerminalSurface
 import com.example.wagateway.PairingMode
 import com.example.wagateway.QrCodeUtil
 import com.example.wagateway.WaGatewayViewModel
@@ -238,7 +241,7 @@ fun WhatsAppGatewayScreen(
                         if (isLoggedIn) {
                             OutlinedButton(
                                 onClick = { viewModel.resetSession() },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                             ) {
                                 Icon(imageVector = Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -317,8 +320,10 @@ fun WhatsAppGatewayScreen(
                                 }
                             },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.White,
-                                checkedTrackColor = AgentWhatsAppGreen
+                                // The channel's own colour comes from the theme's tertiary roles so
+                                // it is the readable green in the light theme, not #25D366.
+                                checkedThumbColor = MaterialTheme.colorScheme.onTertiary,
+                                checkedTrackColor = MaterialTheme.colorScheme.tertiary
                             )
                         )
                     }
@@ -378,6 +383,8 @@ fun WhatsAppGatewayScreen(
                                                 .size(220.dp)
                                                 .clip(RoundedCornerShape(12.dp))
                                                 .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                                                // Intentionally always white: a QR code needs a
+                                                // light quiet zone to stay scannable in dark mode.
                                                 .background(Color.White)
                                                 .padding(8.dp)
                                         )
@@ -422,7 +429,7 @@ fun WhatsAppGatewayScreen(
                                     colors = ButtonDefaults.buttonColors(containerColor = AgentWhatsAppGreen)
                                 ) {
                                     if (isRequestingCode) {
-                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                                     } else {
                                         Text("Minta Kode Pairing 8 Karakter")
                                     }
@@ -511,7 +518,7 @@ fun WhatsAppGatewayScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = AgentWhatsAppGreen)
                     ) {
                         if (isSending) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                         } else {
                             Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -529,7 +536,7 @@ fun WhatsAppGatewayScreen(
                     .fillMaxWidth()
                     .height(200.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                colors = CardDefaults.cardColors(containerColor = TerminalSurface),
                 border = CardDefaults.outlinedCardBorder().copy(
                     brush = androidx.compose.ui.graphics.SolidColor(
                         MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
@@ -541,7 +548,7 @@ fun WhatsAppGatewayScreen(
                         Text(
                             text = "Belum ada log gateway.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
+                            color = TerminalInkMuted
                         )
                     }
                 } else {
@@ -558,7 +565,7 @@ fun WhatsAppGatewayScreen(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp
                                 ),
-                                color = Color(0xFFE2E8F0)
+                                color = TerminalInk
                             )
                         }
                     }
