@@ -27,7 +27,7 @@ import kotlinx.coroutines.delay
  * note when the fingerprints matched, and the fresh page view so the model does not need an extra
  * round-trip on `browser_read`.
  */
-private fun describeActionResult(
+private suspend fun describeActionResult(
     manager: BrowserAutomationManager,
     result: BrowserActionResult,
     maxChars: Int = 3_000
